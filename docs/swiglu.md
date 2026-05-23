@@ -40,7 +40,8 @@ dgate = dout * up * (sigmoid(gate) + gate * sigmoid(gate) * (1 - sigmoid(gate)))
 
 Numerical stability:
 
-- `sigmoid` and `silu` should be computed in fp32 for fp16/bf16 inputs, then cast back to the output dtype before the multiply, matching HuggingFace/Liger/Unsloth behavior.
+- `sigmoid` and `silu` should be computed in fp32 for fp16/bf16 inputs. This matches Liger and Unsloth, but intentionally diverges from HuggingFace eager LLaMA MLP, which applies `ACT2FN[hidden_act](gate_proj(x)) * up_proj(x)` directly in the activation dtype.
+- Because the fp32-SiLU path is more accurate than the HF eager expression, HF parity tolerances must allow dtype-order differences; Liger/Unsloth parity should use the same cast boundary as their kernels.
 - The operation is elementwise and has no reductions, so there is no accumulation-order nondeterminism.
 - Large positive or negative gates saturate sigmoid. This is expected; the fp32 sigmoid path reduces avoidable precision loss.
 
@@ -50,6 +51,7 @@ Mathematical assumptions:
 - The last dimension is the feature/intermediate dimension.
 - Output shape matches input shape.
 - Biases and the surrounding linear projections are outside the standalone activation kernel.
+- `gate_multiplier` and `down_multiplier`, if supported, are scalar Python floats only. Per-row, per-channel, or per-element scale tensors are out of scope for P1.
 
 Open questions:
 
@@ -71,7 +73,7 @@ Explicitly unsupported in the first pass:
 - CPU Triton execution.
 - Quantized integer inputs.
 - Sparse inputs.
-- In-place mutation of user inputs.
+- Fast backward mode does not guarantee input preservation; use `preserve_inputs=True` for that behavior.
 - Full MLP matmul fusion.
 - Distributed DTensor support unless explicitly requested.
 
@@ -91,12 +93,16 @@ def swiglu_reference(
 ) -> torch.Tensor:
     gate_fp32 = gate.to(torch.float32) * float(gate_multiplier)
     activated = torch.nn.functional.silu(gate_fp32).to(up.dtype)
-    return activated * up * float(down_multiplier)
+    # Pin the default parity order: first multiply activated gate by up,
+    # then apply the scalar down multiplier in the output dtype.
+    return (activated * up) * float(down_multiplier)
 ```
 
 Reference behavior:
 
 - PyTorch autograd provides the backward baseline.
+- The default reference pins the parity order as `(silu_fp32_cast_to_dtype * up) * down_multiplier`.
+- A stricter Forge accuracy variant may instead compute `(silu_fp32 * up.float()) * down_multiplier` before the final cast, but that should be benchmarked and tested separately because it diverges from HF/Liger/Unsloth dtype order.
 - For fp32, target strict parity within `rtol=1e-5`, `atol=1e-5` for ordinary random inputs.
 - For fp16/bf16, target `rtol=1e-2`, `atol=1e-2` initially, then tighten based on real device data.
 - Gradcheck should use smaller shapes and fp64 or fp32 reference where practical.
@@ -153,10 +159,12 @@ Optimization strategy:
 
 - One Triton program per row after reshaping to `(-1, hidden)`.
 - Block size is `next_power_of_2(hidden)` with a max fused size of 65536.
+- `num_warps` follows Liger's size policy unless benchmarking proves another policy: 4 warps below block 2048, 8 warps for block >= 2048, 16 warps for block >= 8192, and 32 warps for block >= 32768 on CUDA.
 - Computes sigmoid/SwiGLU in fp32.
 - Recomputes sigmoid/SwiGLU in backward instead of saving activated output.
 - Saves `gate` and `up`; returns gradients by writing into the saved `gate` and `up` buffers inside the backward helper.
 - Forces contiguous inputs through an `ensure_contiguous` wrapper.
+- Applies `down_multiplier` outside the Triton kernels when it is not 1.0, causing one extra output-sized elementwise pass in forward and one in backward.
 
 Optimized axes:
 
@@ -189,6 +197,8 @@ Cons / gaps:
 - No packed `[..., 2 * hidden]` path in the standalone op.
 - Full matmul epilogue fusion is left for future work.
 - Multipliers are now included upstream, but add API surface that Forge may not need immediately.
+- Non-default `down_multiplier` is not fused into Liger's Triton kernels.
+- Backward mutates saved input buffers. This reduces gradient allocation pressure but can corrupt any other reference to contiguous `gate`/`up` tensors and makes higher-order autograd unsafe/unsupported.
 
 ## Unsloth Comparison
 
@@ -217,6 +227,7 @@ Optimization strategy:
 - Supports long indexing beyond int32-safe element counts.
 - Computes gate sigmoid/SwiGLU in fp32.
 - Backward mutates buffers in-place: `DW <- h`, `e <- df`, `g <- de`, avoiding extra intermediate allocations in the LoRA pipeline.
+- Its gate derivative uses `se * (1 + e * (1 - se))`, which is algebraically identical to `sig + silu_e * (1 - sig)`.
 
 Optimized axes:
 
@@ -280,8 +291,9 @@ Avoidable intermediate tensors:
 
 Recompute vs save:
 
-- Recompute `sigmoid(gate)` and `silu(gate)` in backward. This costs one sigmoid but avoids saving another activation-sized tensor.
+- Recompute `sigmoid(gate)` and `silu(gate)` in backward. This costs one sigmoid pass but avoids saving a sigmoid/activation-sized auxiliary tensor.
 - Save `gate` and `up`, because both are required for exact gradients.
+- Saving `out` is not useful for the default backward: `out = silu(gate) * up * down_multiplier` does not recover `sigmoid(gate)` without unstable division and does not avoid the backward sigmoid.
 
 Fusion opportunities:
 
@@ -317,6 +329,14 @@ Backward correctness risks:
 - Missing the extra `gate_multiplier` factor in `dgate`.
 - Applying `down_multiplier` in forward but not scaling upstream gradient in backward.
 - Accidentally overwriting saved inputs before autograd finishes.
+- In-place gradient writes can corrupt user-visible contiguous `gate`/`up` tensors because a contiguity wrapper may return the original tensor storage.
+- In-place mutation of saved tensors breaks or invalidates higher-order autograd. Avoiding mutation preserves saved tensors, but true gradgrad support still requires explicit differentiable backward or second-order formulas.
+
+Special-value semantics:
+
+- NaN and Inf propagation should be tested directly against the chosen PyTorch reference.
+- `sigmoid(+inf) = 1` and `sigmoid(-inf) = 0`, but the naive `x * sigmoid(x)` SiLU formula can still produce implementation-specific edge behavior for `-inf * 0`; tests should lock Forge behavior to the selected reference.
+- Multipliers much smaller than 1 can lose mantissa bits or underflow in fp16/bf16 if applied after casting to output dtype. A fp32-product variant could improve this, but it is a deliberate accuracy divergence from the default competitor-parity path.
 
 ## Memory And Roofline Model
 
@@ -350,6 +370,8 @@ Interpretation:
 - Speedup should be most visible in full forward/backward memory and launch count, not raw FLOP throughput.
 - Very small tensors cannot approach bandwidth limits; launch overhead dominates.
 - Full MLP runtime may still be dominated by GEMMs, so activation speedup must be reported separately and inside an MLP benchmark.
+- At the Qwen3 bf16 shape, one activation-sized tensor is 172 MiB. A safety mode that allocates fresh `dgate` and `dup` instead of reusing saved buffers can add up to 344 MiB peak memory versus Liger's in-place backward. This should be opt-in for edge cases, not forced on the common training path.
+- For non-default `down_multiplier`, Liger's out-of-kernel scalar multiply adds a full read+write pass in forward and backward. At Qwen3 bf16 shape, that is roughly 344 MiB extra memory traffic per pass, or 688 MiB across forward and backward, before allocator effects.
 
 ## Implementation Alternatives
 
@@ -358,6 +380,7 @@ Alternative A: row-wise separate-tensor kernel.
 - Input: `gate` and `up`, both shaped `(..., hidden)`.
 - Grid: one Triton program per flattened row.
 - Block: `next_power_of_2(hidden)`, masked.
+- Warps: start with Liger's block-size policy, then autotune/benchmark only if measured shapes show occupancy or latency issues.
 - Pros: close to Liger; simple strides; excellent for standard LLM intermediate sizes; natural autograd wrapper.
 - Cons: hidden-size block cap; less ideal for tiny hidden sizes or tiny row counts.
 - Recommendation: first implementation.
@@ -366,7 +389,7 @@ Alternative B: flat separate-tensor kernel.
 
 - Input: `gate` and `up`, contiguous flattened element stream.
 - Grid: one Triton program per fixed block of elements, e.g. 1024.
-- Pros: close to Unsloth; simple long-indexing path; good for arbitrary total element counts.
+- Pros: close to Unsloth; simple long-indexing path; good for arbitrary total element counts; can remove the row-wise 65536 hidden cap for contiguous tensors.
 - Cons: less shape-specialized; may not exploit row-local hidden-size structure; backward still needs two output gradients.
 - Recommendation: benchmark variant only after row-wise baseline.
 
@@ -393,9 +416,76 @@ Alternative D: matmul epilogue / dual-GEMM fusion.
 | Public op | `swiglu(gate, up)` | `swiglu(gate, up, gate_multiplier=1.0, down_multiplier=1.0)` | Broader, because multipliers are scalar and cheap. |
 | Input layout | Separate tensors only | Separate plus packed | Separate first; packed later. |
 | Contiguity | Require contiguous and raise | Internally call `.contiguous()` | Internally call `.contiguous()` for parity with Liger, but benchmark copy overhead separately. |
-| Backward storage | Save `gate`, `up`, maybe `out` | Save `gate`, `up`; recompute SiLU | Recompute. |
-| Gradient writes | Allocate fresh `dgate`, `dup` | Mutate saved buffers | Allocate fresh for public safety. |
+| Backward storage | Save `gate`, `up`; recompute SiLU | Save sigmoid/activation auxiliary | Recompute. Saving `out` is not useful. |
+| Gradient writes | Mutate/reuse saved buffers | Allocate fresh `dgate`, `dup` | Default to fast buffer reuse; add a safety flag for callers that need preserved inputs. |
+| Scalar multiplier placement | Apply `down_multiplier` outside the kernel | Fuse `down_multiplier` into forward/backward kernels | Fuse it. This is a concrete Liger gap for non-default multipliers. |
+| Product precision | Competitor-parity dtype order | Optional fp32 product through final cast | Start with parity; measure fp32-product as an accuracy variant if requested. |
+| Hidden > 65536 | Inherit row-wise cap | Flat or multi-block row variant | Stage 2A inherits cap; Stage 2B flat variant can remove it for contiguous tensors. |
 | Package layout | Test-local imports | Add minimal package scaffolding | Prefer scaffolding if user is okay with repo-level setup. |
+
+## Competitive Bar Before Implementation
+
+The first implementation must not be justified as "we can write the same thing locally." Liger and Unsloth are the floor.
+
+What Liger already does well:
+
+- Standalone `torch.autograd.Function` for `silu(gate) * up`.
+- Row-wise Triton programs over the hidden dimension.
+- fp32 sigmoid/SiLU and recompute in backward.
+- Optional `gate_multiplier` and `down_multiplier`.
+- Contiguity handling and broad HuggingFace monkey-patch coverage.
+- DTensor support in current upstream.
+
+What Unsloth already does well:
+
+- Flat elementwise kernels with `LONG_INDEXING` specialization for very large tensors.
+- In-place backward buffer reuse inside the LoRA MLP path.
+- Tight coupling with fused LoRA MLP custom autograd, where the activation kernel is only one piece of a larger memory-saving design.
+
+What Axolotl-style Unsloth derivatives already do:
+
+- Use activation Triton kernels together with higher-level LoRA MLP custom autograd.
+- Recompute activation output and gradients during backward so the surrounding autograd function can avoid extra saved tensors.
+
+Therefore a Forge SWIGLU POC is only worthwhile if it provides at least one of these advantages:
+
+1. **Hybrid coverage advantage:** expose a standalone, safe autograd API that combines Liger's multiplier-compatible public function with Unsloth's long-indexing/flat-kernel robustness where that actually benchmarks better.
+2. **Shape-specialized performance advantage:** benchmark both row-wise and flat kernels, then choose by shape regime rather than hard-coding one competitor's strategy.
+3. **Packed-layout advantage:** support a packed `gate_up` path for combined projection layouts. Liger's standalone op does not provide this path, while NVIDIA NeMo's combined gate/up projection docs identify combined projection as a launch/memory-efficiency tool.
+4. **MLP/LoRA integration advantage:** use the standalone kernel as the baseline, but treat a fused LoRA MLP or packed MLP path as the real route to beating Unsloth. Unsloth's advantage is the whole custom-autograd MLP, not just the activation microkernel.
+5. **Evidence advantage:** publish a benchmark matrix and roofline accounting that makes clear when Forge wins, ties, or loses. If the result only ties Liger and is less integrated than Unsloth, the checkpoint should say so and not oversell it.
+
+Forge-vs-Liger measurable advantage candidates:
+
+| Candidate | Why it can beat/broaden Liger | Cost / risk | Measurement |
+| --- | --- | --- | --- |
+| Fuse `down_multiplier` into forward and backward Triton kernels | Avoids Liger's extra full-tensor multiply pass when `down_multiplier != 1.0`; about 344 MiB saved traffic per pass at Qwen3 bf16 shape | Only affects non-default multipliers; must preserve chosen dtype order | Benchmark multiplier and no-multiplier paths separately |
+| Configurable backward storage | Fast mode can match competitor memory behavior; safety mode avoids user-visible activation corruption and keeps saved tensors valid for surrounding autograd checks | Safety mode can add up to +344 MiB peak memory at Qwen3 bf16 shape; not by itself gradgrad support | Benchmark fast vs safety mode; test mutation semantics explicitly |
+| Optional fp32 product-through-multiplier variant | Can reduce fp16/bf16 underflow or mantissa loss for small `down_multiplier` | Diverges from HF/Liger/Unsloth parity and may affect convergence | Separate accuracy/convergence and bit-diff tests |
+| Packed `gate_up` path | Targets combined-projection layouts not covered by Liger's standalone op | More API/stride complexity | Compare packed kernel vs chunk + separate kernel |
+| Flat long-indexing variant | Can remove row-wise hidden cap and match Unsloth's large-tensor robustness | May lose row-wise performance on common hidden sizes | Shape selector benchmarks across tiny, typical, huge, odd shapes |
+
+Minimum accept criteria for Stage 2 design:
+
+- Implementing only a Liger-like row-wise op is acceptable as a **baseline implementation**, not as the final claim.
+- The code plan must include either a second variant (`flat` or `packed`) or a documented benchmark gate that decides whether the row-wise baseline is worth keeping.
+- The benchmark must compare against at least PyTorch and the closest local competitor implementation available in the environment. If Liger/Unsloth cannot be imported, the report must state that the comparison is blocked.
+- The final report should classify each result as one of: better than Liger/Unsloth, parity with lower complexity, parity but not differentiated, or worse.
+
+Revised recommendation:
+
+- Stage 2A: implement a clean row-wise baseline only to establish correctness, tests, package structure, and benchmark harness.
+- Stage 2B: before calling SWIGLU "done", implement at least one differentiating path:
+  - preferred: packed `gate_up` forward/backward path for combined projection outputs;
+  - fallback: flat long-indexing variant selected for small/huge shapes if it beats row-wise;
+  - later/stronger: LoRA MLP integration where activation backward recomputes `h`, `dup`, and `dgate` for the surrounding projection gradients.
+- Stage 2 output should not claim superiority unless benchmarks show it.
+
+Research implications:
+
+- Liger's paper reports that SwiGLU/GeGLU mostly match baseline speed while reducing peak memory around 1.6x at long sequence length. That suggests standalone activation has limited headroom if Liger is already near bandwidth limits.
+- Triton issue #8232 reports a naive activation-style SWIGLU kernel reaching near H100 bandwidth and outperforming a TMA attempt for many sizes. That argues against spending first effort on TMA/persistent complexity.
+- Recent external claims of much larger SwiGLU gains appear to involve broader fusion and memory-traffic elimination, not simply rewriting the same pointwise activation.
 
 ## Test Matrix Detail
 
@@ -406,7 +496,10 @@ Standalone operation tests:
 - Multiplier parity with `(0.7, 1.3)`, `(1.5, 0.5)`, and `(1.0, 1.0)`.
 - Non-contiguous input behavior, if wrapper promises it.
 - Shape mismatch error behavior.
-- Hidden size around powers of two: 1, 2, 7, 8, 9, 1023, 1024, 1025, 11008, 11009.
+- Hidden size around powers of two: 1, 2, 7, 8, 9, 1023, 1024, 1025, 11008, 11009. The tiny sizes are masking/indexing edge tests, not performance-representative shapes.
+- Special values: include `nan`, `+inf`, `-inf`, large finite positives/negatives, zeros, and small non-default multipliers.
+- Input mutation: verify `gate` and `up` are unchanged after backward for Forge's safe path.
+- Optional higher-order behavior: either explicitly mark gradgrad unsupported or add second-order tests if a differentiable backward is implemented.
 
 MLP-level smoke tests:
 
@@ -448,7 +541,7 @@ Useful findings:
 Rejected ideas for first implementation:
 
 - Full gate/up/down matmul fusion: too broad for P1 and hard to validate without a stable activation baseline.
-- In-place mutation like Unsloth backward: valuable for a coupled LoRA path, risky for a standalone autograd API.
+- Always-safe backward as the only mode: avoids mutation surprises, but pays a large peak-memory cost for rare aliasing/higher-order cases.
 - TMA-based activation kernel: not justified for a first Tier 1 POC; measure naive first.
 
 Missing research:
@@ -495,24 +588,53 @@ Idea 4: Flat 1D long-indexing kernel variant.
 
 ## Selected Design Candidate
 
-Recommended Stage 2 implementation:
+Implementation status as of 2026-05-24:
+
+- Implemented independent SWIGLU kernel in `kernel-POCs/kernels/swiglu/swiglu.py`.
+- Implemented row-wise separate-tensor API: `swiglu(gate, up, gate_multiplier=1.0, down_multiplier=1.0, preserve_inputs=False)`.
+- Implemented packed API: `swiglu_packed(gate_up, gate_multiplier=1.0, down_multiplier=1.0, preserve_inputs=False)`.
+- Added top-level correctness tests in `kernel-POCs/tests/test_swiglu.py`.
+- Added local benchmark in `kernel-POCs/kernels/swiglu/benchmarks/benchmark_swiglu.py`.
+- Did not add package scaffolding or touch the shared benchmark folder.
+- Local validation was limited to syntax and whitespace checks because this environment has no installed `torch` and no visible NVIDIA driver.
+
+Recommended Stage 2A baseline implementation:
 
 - Create `kernel-POCs/kernels/swiglu/swiglu.py`.
 - Provide `swiglu(gate, up, gate_multiplier=1.0, down_multiplier=1.0)` backed by `torch.autograd.Function`.
 - Implement separate forward and backward Triton kernels.
 - Use row-wise programs over flattened `(-1, hidden)` tensors.
-- Compute gate sigmoid/SiLU in fp32 and cast activated value to input dtype before multiplying.
+- Use Liger's initial `BLOCK_SIZE`/`num_warps` policy and record benchmark evidence before changing it.
+- Compute gate sigmoid/SiLU in fp32 and cast activated value to input dtype before multiplying for the default competitor-parity path.
+- Fuse scalar `down_multiplier` into the forward and backward kernels instead of launching separate full-tensor multiplies.
 - Save only `gate` and `up`; recompute activation in backward.
 - Require contiguous inputs internally by calling `.contiguous()` in the wrapper.
-- Do not mutate user-visible inputs.
+- Add a backward storage flag, preferably `preserve_inputs: bool = False`.
+- Default fast mode may reuse saved `gate`/`up` buffers for `dgate`/`dup`, matching competitor memory behavior for ordinary training.
+- `preserve_inputs=True` allocates fresh `dgate` and `dup` and avoids mutating saved/user-visible tensors; report its peak-memory tradeoff.
+- Treat hidden sizes above 65536 as unsupported in Stage 2A. The Stage 2B flat variant is the proposed route to remove this cap for contiguous tensors.
 - Add `kernel-POCs/tests/test_swiglu.py` correctness tests.
 - Add `kernel-POCs/kernels/swiglu/benchmarks/benchmark_swiglu.py` local benchmark.
 
-Why this boundary:
+Why this baseline boundary:
 
 - It matches the natural HF/Liger patch point and the existing Forge README P1 scope.
-- It produces a small, auditable Triton kernel before broader MLP/LoRA fusion.
-- It gives a reliable baseline for later packed or matmul-epilogue variants.
+- It produces a small, auditable correctness target before broader MLP/LoRA fusion.
+- It gives a reliable benchmark control for packed, flat, and future fused variants.
+- It is not by itself a claim of superiority over Liger.
+
+Recommended Stage 2B differentiating implementation before calling SWIGLU complete:
+
+- Add a packed `swiglu_packed(gate_up, split_dim=-1, ...)` path if we want to target combined-projection models.
+- Or add a flat long-indexing variant and shape selector if benchmarks show row-wise is not best for small/huge shapes.
+- Or add an fp32-product variant if accuracy/convergence needs justify diverging from competitor parity.
+- Or move directly into a LoRA MLP integration if the team wants to beat Unsloth on its strongest axis rather than activation-only microbenchmarks.
+
+Superiority claim rule:
+
+- If only Stage 2A exists, report it as "Forge baseline with Liger-like design."
+- If Stage 2B wins on at least one measured shape/dtype/layout regime, report exactly that regime and keep the loss/tie regimes visible.
+- If no Stage 2B variant beats Liger/Unsloth, either stop or justify Forge-specific value as package/API/test/benchmark integration rather than performance.
 
 ## Correctness Plan
 
@@ -521,11 +643,15 @@ Forward parity:
 - Shapes: `(1, 1, 8)`, `(2, 8, 8)`, `(4, 16, 11008)`, `(2, 7, 41)`, flattened `(8192, 11008)` if memory allows.
 - Dtypes: fp32, fp16, bf16 when CUDA supports them.
 - Multipliers: default and non-default scalar combinations.
+- Reference order: default tests use `(silu_fp32_cast_to_dtype * up) * down_multiplier`.
+- HF comparison: run separately from Liger/Unsloth comparison because HF eager does not upcast SiLU to fp32.
+- Fast backward and `preserve_inputs=True` mode should both match gradients.
 
 Backward parity:
 
 - Compare `gate.grad` and `up.grad` against PyTorch reference.
 - Test non-contiguous inputs if wrapper promises `.contiguous()` behavior.
+- Test mutation semantics explicitly: fast mode may mutate saved buffers; preserve mode must not.
 
 Gradcheck:
 
@@ -544,7 +670,9 @@ Baselines:
 
 - PyTorch reference: `torch.nn.functional.silu(gate.float()).to(dtype) * up`.
 - Liger local kernel, if dependencies are installed and importable.
-- Forge Triton kernel.
+- Unsloth local kernel, if dependencies are installed and importable.
+- Forge row-wise baseline.
+- Forge differentiating variant: packed or flat, depending on Stage 2B choice.
 
 Shape strata:
 
@@ -552,6 +680,7 @@ Shape strata:
 - Small: batch 1, seq 1-128, hidden 64-1024.
 - Odd: hidden 41, 4097, 11009.
 - Large: hidden 32768 and 65536 if memory allows.
+- Multiplier-specific: repeat typical and odd shapes with `down_multiplier != 1.0` to measure the Liger extra-pass gap.
 
 Dtypes:
 
@@ -572,14 +701,16 @@ Device:
 ## Known Failure Boundaries
 
 - Current environment lacks installed `torch` and visible NVIDIA driver, so live tests/benchmarks cannot run here yet.
-- Hidden dimension above selected max fused block size will need a multi-block design.
+- Stage 2A row-wise kernel inherits a 65536 hidden cap. Supporting larger hidden sizes requires either a flat kernel or a multi-block-per-row design.
 - Non-contiguous inputs add copy overhead if handled by `.contiguous()`.
 - Very small tensors may not show speedup due to launch overhead.
-- Full MLP fusion and packed gate/up handling are intentionally outside the first standalone POC unless approved.
+- Activation-only kernels may be unable to substantially beat Liger if Liger is already bandwidth-bound.
+- Full MLP/LoRA fusion is a different, larger kernel surface, but it may be required to beat Unsloth end-to-end.
 
 ## Human Checkpoint Questions
 
 1. Should Stage 2 include `gate_multiplier` and `down_multiplier` in the first public API? My recommendation: yes, because the implementation cost is low and it tracks current Liger behavior.
 2. Should I create/switch to branch `day1/p1-swiglu-kernel` before code generation? Current branch is `main`.
-3. Should the first implementation be separate-tensor only (`gate`, `up`), with packed `[..., 2 * hidden]` deferred? My recommendation: yes, keep packed support as a follow-up benchmark variant.
-4. Do you want me to request approval to refresh `Liger-Kernel/` and `unsloth/` with `git pull --ff-only` before Stage 2, or continue from the current local checkouts plus web-checked source?
+3. Which differentiating Stage 2B path should be required before calling SWIGLU complete: packed `gate_up`, flat long-indexing/shape selector, or LoRA MLP integration? My recommendation: packed `gate_up` first, flat selector second, LoRA MLP as a later kernel-family integration.
+4. Should I add minimal package scaffolding now so SWIGLU tests and benchmarks use stable imports?
+5. Do you want me to request approval to refresh `Liger-Kernel/` and `unsloth/` with `git pull --ff-only` before Stage 2, or continue from the current local checkouts plus web-checked source?
