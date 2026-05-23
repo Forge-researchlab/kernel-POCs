@@ -40,10 +40,10 @@ uv run python kernels/cross_entropy/benchmarks/bench_cross_entropy.py \
 ## Providers
 
 - `torch`: `torch.nn.functional.cross_entropy`
-- `forge`: current experiment under `experiments/v1/`
+- `forge`: current experiment under `experiments/v2/`
 - `liger`: `liger_kernel.transformers.cross_entropy.LigerCrossEntropyLoss`
 
-`experiments/v1/` starts as a PyTorch reference placeholder so the benchmark and tests are usable immediately. Replace it with Triton implementations as you iterate.
+`experiments/v1/` is the first core Triton path. `experiments/v2/` is the current benchmark target and mirrors the full Liger cross entropy surface: class weights, z-loss, softcap, token accuracy, predicted tokens, label smoothing, ignore index, and all reductions.
 
 The benchmark prints one summary section per `BT` value with raw Forge, Torch, and Liger numbers. The comparison columns use Forge as the target: `Torch/Forge` and `Liger/Forge`. Values above `1.00x` mean Forge is better; values below `1.00x` mean Forge is worse. CSV output is optional via `--save`.
 
@@ -51,7 +51,7 @@ The benchmark prints one summary section per `BT` value with raw Forge, Torch, a
 
 - [ ] Forward matches PyTorch reference for fp32 and bf16
 - [ ] Backward gradient matches PyTorch
-- [ ] Handles `ignore_index`, `mean`, `sum`, and `none` reductions
+- [ ] Handles weights, z-loss, softcap, token accuracy, predicted tokens, `ignore_index`, label smoothing, and all reductions
 - [ ] Benchmarked against PyTorch and Liger at LLaMA-3 vocab scale
 - [ ] Peak activation memory is lower than PyTorch
 - [ ] Measurable speedup over PyTorch for long-token regimes

@@ -11,10 +11,12 @@ import torch.nn.functional as F
 KERNEL_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KERNEL_ROOT))
 
-from experiments.v1 import forge_cross_entropy  # noqa: E402
+from experiments.v2 import CrossEntropyOutput  # noqa: E402
+from experiments.v2 import forge_cross_entropy  # noqa: E402
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="Forge cross entropy v2 requires CUDA")
 
 
 def _supports_bfloat16() -> bool:
@@ -222,19 +224,17 @@ def test_all_ignored_rows_have_zero_gradient(reduction: str) -> None:
     _assert_forward_backward_match(logits_ref, logits_forge, target, reduction=reduction, ignore_index=-100)
 
 
-def test_all_ignored_mean_matches_torch_nan_value_and_zero_gradient() -> None:
+def test_all_ignored_mean_matches_liger_zero_value_and_zero_gradient() -> None:
     logits_ref, logits_forge, target = _make_case(2, 4, 32, torch.float32)
     target.fill_(-100)
 
-    expected = F.cross_entropy(logits_ref, target, ignore_index=-100, reduction="mean")
+    expected = torch.zeros((), device=DEVICE, dtype=logits_ref.dtype)
     actual = forge_cross_entropy(logits_forge, target, ignore_index=-100, reduction="mean")
 
-    assert torch.isnan(expected)
-    assert torch.isnan(actual)
+    torch.testing.assert_close(actual, expected)
 
-    expected.backward()
     actual.backward()
-    torch.testing.assert_close(logits_forge.grad, logits_ref.grad, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(logits_forge.grad, torch.zeros_like(logits_forge), rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("bad_target", [-1, 128])
@@ -243,7 +243,7 @@ def test_out_of_bounds_target_raises(bad_target: int) -> None:
     target = torch.randint(0, 128, (8,), device=DEVICE)
     target[2] = bad_target
 
-    with pytest.raises(IndexError, match="out of bounds"):
+    with pytest.raises((AssertionError, IndexError), match="out of bounds"):
         forge_cross_entropy(logits, target)
 
 
@@ -260,9 +260,188 @@ def test_weight_fallback_matches_torch(reduction: str) -> None:
     )
 
 
-def test_cpu_path_uses_torch_compatibility_fallback() -> None:
-    logits_ref = torch.randn(5, 19, requires_grad=True)
-    logits_forge = logits_ref.detach().clone().requires_grad_(True)
-    target = torch.randint(0, 19, (5,))
+def _softcap_reference(logits: torch.Tensor, softcap: float | None) -> torch.Tensor:
+    if softcap is None:
+        return logits
+    return softcap * torch.tanh(logits.to(torch.float32) / softcap)
 
-    _assert_forward_backward_match(logits_ref, logits_forge, target)
+
+def _cross_entropy_with_z_loss_reference(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    weight: torch.Tensor | None = None,
+    ignore_index: int = -100,
+    lse_square_scale: float = 0.0,
+    label_smoothing: float = 0.0,
+    reduction: str = "mean",
+    softcap: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    logits_for_loss = _softcap_reference(logits, softcap)
+    ce_loss = F.cross_entropy(
+        logits_for_loss,
+        target,
+        weight=weight,
+        ignore_index=ignore_index,
+        reduction=reduction,
+        label_smoothing=label_smoothing,
+    )
+
+    target_mask = target != ignore_index
+    z_loss = torch.where(
+        target_mask,
+        lse_square_scale * torch.logsumexp(logits_for_loss, dim=-1) ** 2,
+        0.0,
+    ).to(logits.dtype)
+    if reduction == "mean":
+        z_loss = z_loss.sum() / target_mask.sum()
+    elif reduction == "sum":
+        z_loss = z_loss.sum()
+
+    return ce_loss.to(logits.dtype) + z_loss, z_loss
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+@pytest.mark.parametrize("return_z_loss", [False, True])
+def test_z_loss_matches_torch_reference(reduction: str, return_z_loss: bool) -> None:
+    logits_ref, logits_forge, target = _make_case(2, 5, 67, torch.float32)
+    expected, expected_z = _cross_entropy_with_z_loss_reference(
+        logits_ref,
+        target,
+        lse_square_scale=1e-4,
+        reduction=reduction,
+    )
+    actual = forge_cross_entropy(
+        logits_forge,
+        target,
+        lse_square_scale=1e-4,
+        reduction=reduction,
+        return_z_loss=return_z_loss,
+    )
+
+    actual_loss = actual.loss if isinstance(actual, CrossEntropyOutput) else actual
+    torch.testing.assert_close(actual_loss, expected, rtol=1e-5, atol=1e-5)
+    if return_z_loss:
+        assert isinstance(actual, CrossEntropyOutput)
+        torch.testing.assert_close(actual.z_loss, expected_z, rtol=1e-5, atol=1e-5)
+
+    actual_loss.backward(gradient=torch.ones_like(actual_loss))
+    expected.backward(gradient=torch.ones_like(expected))
+    torch.testing.assert_close(logits_forge.grad, logits_ref.grad, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+@pytest.mark.parametrize("softcap", [30.0, 40.0])
+def test_softcap_matches_torch_reference(reduction: str, softcap: float) -> None:
+    logits_ref, logits_forge, target = _make_case(2, 5, 67, torch.float32, scalar=3.0)
+    expected, _ = _cross_entropy_with_z_loss_reference(
+        logits_ref,
+        target,
+        reduction=reduction,
+        softcap=softcap,
+    )
+    actual = forge_cross_entropy(logits_forge, target, reduction=reduction, softcap=softcap)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+    actual.backward(gradient=torch.ones_like(actual))
+    expected.backward(gradient=torch.ones_like(expected))
+    torch.testing.assert_close(logits_forge.grad, logits_ref.grad, rtol=1e-5, atol=1e-5)
+
+
+def test_weight_with_label_smoothing_and_ignore_index_matches_reference() -> None:
+    logits_ref, logits_forge, target = _make_case(2, 5, 83, torch.float32)
+    target = _apply_ignore_index(target, -100)
+    weight = torch.rand(83, device=DEVICE)
+    expected, _ = _cross_entropy_with_z_loss_reference(
+        logits_ref,
+        target,
+        weight=weight,
+        ignore_index=-100,
+        label_smoothing=0.1,
+        reduction="mean",
+    )
+    actual = forge_cross_entropy(
+        logits_forge,
+        target,
+        weight=weight,
+        ignore_index=-100,
+        label_smoothing=0.1,
+        reduction="mean",
+    )
+
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+    actual.backward()
+    expected.backward()
+    torch.testing.assert_close(logits_forge.grad, logits_ref.grad, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("return_z_loss", [False, True])
+def test_token_accuracy_and_predicted_tokens_match_torch(return_z_loss: bool) -> None:
+    logits = torch.randn(13, 41, device=DEVICE, requires_grad=True)
+    target = torch.randint(0, 41, (13,), device=DEVICE)
+    target[::4] = -100
+    predicted = logits.detach().argmax(dim=-1)
+    predicted = torch.where(target == -100, torch.full_like(predicted, -1), predicted)
+    expected_accuracy = ((predicted == target) & (target != -100)).float().sum() / (target != -100).sum()
+
+    actual = forge_cross_entropy(
+        logits,
+        target,
+        ignore_index=-100,
+        lse_square_scale=1e-4,
+        return_z_loss=return_z_loss,
+        return_token_accuracy=True,
+        return_predicted_tokens=True,
+    )
+
+    assert isinstance(actual, CrossEntropyOutput)
+    torch.testing.assert_close(actual.token_accuracy, expected_accuracy)
+    torch.testing.assert_close(actual.predicted_tokens, predicted)
+
+
+@pytest.mark.parametrize("return_z_loss", [False, True])
+@pytest.mark.parametrize("return_token_accuracy", [False, True])
+@pytest.mark.parametrize("return_predicted_tokens", [False, True])
+def test_full_feature_surface_matches_liger_public_wrapper(
+    return_z_loss: bool,
+    return_token_accuracy: bool,
+    return_predicted_tokens: bool,
+) -> None:
+    liger_ce_module = pytest.importorskip("liger_kernel.transformers.cross_entropy")
+    liger_ce_cls = liger_ce_module.LigerCrossEntropyLoss
+
+    logits = torch.randn(17, 89, device=DEVICE, requires_grad=True)
+    logits_forge = logits.detach().clone().requires_grad_(True)
+    logits_liger = logits.detach().clone().requires_grad_(True)
+    target = torch.randint(0, 89, (17,), device=DEVICE)
+    target[::5] = -100
+    weight = torch.rand(89, device=DEVICE)
+
+    kwargs = {
+        "weight": weight,
+        "ignore_index": -100,
+        "lse_square_scale": 1e-4,
+        "label_smoothing": 0.1,
+        "reduction": "mean",
+        "softcap": 30.0,
+        "return_z_loss": return_z_loss,
+        "return_token_accuracy": return_token_accuracy,
+        "return_predicted_tokens": return_predicted_tokens,
+    }
+    forge_out = forge_cross_entropy(logits_forge, target, **kwargs)
+    liger_out = liger_ce_cls(**kwargs)(logits_liger, target)
+
+    forge_loss = forge_out.loss if isinstance(forge_out, CrossEntropyOutput) else forge_out
+    liger_loss = liger_out.loss if hasattr(liger_out, "loss") else liger_out
+    torch.testing.assert_close(forge_loss, liger_loss, rtol=1e-5, atol=1e-5)
+
+    if return_z_loss:
+        torch.testing.assert_close(forge_out.z_loss, liger_out.z_loss, rtol=1e-5, atol=1e-5)
+    if return_token_accuracy:
+        torch.testing.assert_close(forge_out.token_accuracy, liger_out.token_accuracy, rtol=1e-5, atol=1e-5)
+    if return_predicted_tokens:
+        torch.testing.assert_close(forge_out.predicted_tokens, liger_out.predicted_tokens)
+
+    forge_loss.backward()
+    liger_loss.backward()
+    torch.testing.assert_close(logits_forge.grad, logits_liger.grad, rtol=1e-5, atol=1e-5)

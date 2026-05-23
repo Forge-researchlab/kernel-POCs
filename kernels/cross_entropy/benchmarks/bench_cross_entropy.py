@@ -3,7 +3,7 @@ Cross entropy benchmark harness.
 
 Compares:
   - torch: torch.nn.functional.cross_entropy
-  - forge: kernels/cross_entropy/experiments/v1
+  - forge: kernels/cross_entropy/experiments/v2
   - liger: liger_kernel.transformers.cross_entropy.LigerCrossEntropyLoss
 
 Timing uses CUDA events and reports median latency. Memory uses CUDA peak
@@ -28,7 +28,7 @@ import torch.nn.functional as F
 KERNEL_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KERNEL_ROOT))
 
-from experiments.v1 import forge_cross_entropy
+from experiments.v2 import forge_cross_entropy  # noqa: E402
 
 
 LossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]

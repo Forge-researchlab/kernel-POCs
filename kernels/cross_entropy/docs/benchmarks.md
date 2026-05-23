@@ -4,7 +4,7 @@
 
 - PyTorch: `torch.nn.functional.cross_entropy`
 - Liger: `LigerCrossEntropyLoss`
-- Forge: current experiment selected by `benchmarks/bench_cross_entropy.py`
+- Forge: `experiments/v2`, which mirrors Liger's full cross entropy feature surface
 
 ## Standard Sweep
 
@@ -37,3 +37,5 @@ uv run python kernels/cross_entropy/benchmarks/bench_cross_entropy.py \
 The terminal output keeps the raw Forge, Torch, and Liger values visible, split by `BT`, and shows `Torch/Forge` plus `Liger/Forge` comparison columns.
 
 The benchmark excludes input tensor creation from the timed region. Peak memory also excludes the base input tensor allocation.
+
+For training claims, treat `full` as the headline mode. `forward` and `backward` are diagnostic phase timings because Forge and Liger intentionally materialize the logits gradient during forward.
