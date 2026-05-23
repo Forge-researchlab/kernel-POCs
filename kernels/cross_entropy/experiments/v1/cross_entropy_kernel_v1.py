@@ -39,6 +39,35 @@ import triton.language as tl
 # same cap is a good first Forge default: large enough for common vocab chunks,
 # small enough to avoid obvious spilling on A100/H100-class GPUs.
 MAX_FUSED_SIZE = 65536 // 2
+MAX_TARGET_STATS_BLOCK = 131072
+
+
+@triton.jit
+def _forge_target_stats_kernel(
+    target_ptr,
+    stats_ptr,
+    n_rows,
+    ignore_index,
+    block_size: tl.constexpr,
+):
+    offsets = tl.arange(0, block_size)
+    mask = offsets < n_rows
+    target = tl.load(target_ptr + offsets, mask=mask, other=ignore_index)
+    active = target != ignore_index
+
+    # One small reduction replaces the host sequence:
+    # target != ignore_index, sum(), masked_select(), min(), max().
+    # That sequence is fine functionally, but it creates target-sized scratch
+    # tensors inside the measured memory window. The stats buffer here is just
+    # three int64 values.
+    count = tl.sum(tl.where(active, 1, 0))
+    checked_target = tl.where(active, target, 0)
+    max_target = tl.max(checked_target)
+    min_target = tl.min(checked_target)
+
+    tl.store(stats_ptr + 0, count)
+    tl.store(stats_ptr + 1, max_target)
+    tl.store(stats_ptr + 2, min_target)
 
 
 @triton.jit
@@ -189,17 +218,48 @@ def _is_triton_path_supported(
     )
 
 
-def _validate_targets(target: torch.Tensor, ignore_index: int, vocab_size: int) -> int:
-    # Liger performs host-side target checks before launching Triton. Without
-    # this, an invalid target can become an out-of-bounds load inside the kernel.
+def _target_stats_torch(target: torch.Tensor, ignore_index: int) -> tuple[int, int, int]:
     target_mask = target != ignore_index
     n_non_ignore = int(target_mask.sum().item())
     if n_non_ignore == 0:
+        return 0, 0, 0
+
+    masked_target = target * target_mask
+    return n_non_ignore, int(masked_target.max().item()), int(masked_target.min().item())
+
+
+def _target_stats_triton(target: torch.Tensor, ignore_index: int) -> tuple[int, int, int]:
+    n_rows = target.numel()
+    if n_rows > MAX_TARGET_STATS_BLOCK:
+        # The one-program reduction is intended for the benchmark shapes here.
+        # Keep a conservative Torch fallback instead of creating a more complex
+        # multi-stage target stats reduction before it is needed.
+        return _target_stats_torch(target, ignore_index)
+
+    stats = torch.empty(3, dtype=torch.int64, device=target.device)
+    block_size = triton.next_power_of_2(n_rows)
+    _forge_target_stats_kernel[(1,)](
+        target,
+        stats,
+        n_rows,
+        ignore_index,
+        block_size,
+        num_warps=8,
+    )
+    return int(stats[0].item()), int(stats[1].item()), int(stats[2].item())
+
+
+def _validate_targets(target: torch.Tensor, ignore_index: int, vocab_size: int) -> int:
+    # Liger performs host-side target checks before launching Triton. Without
+    # this, an invalid target can become an out-of-bounds load inside the kernel.
+    if target.is_cuda:
+        n_non_ignore, max_target, min_target = _target_stats_triton(target, ignore_index)
+    else:
+        n_non_ignore, max_target, min_target = _target_stats_torch(target, ignore_index)
+
+    if n_non_ignore == 0:
         return 0
 
-    active_targets = target.masked_select(target_mask)
-    max_target = int(active_targets.max().item())
-    min_target = int(active_targets.min().item())
     if max_target >= vocab_size:
         raise IndexError(f"Target {max_target} is out of bounds. Expected < {vocab_size}")
     if min_target < 0:
