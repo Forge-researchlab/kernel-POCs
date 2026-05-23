@@ -597,6 +597,7 @@ Implementation status as of 2026-05-24:
 - Added local benchmark in `kernel-POCs/kernels/swiglu/benchmarks/benchmark_swiglu.py`.
 - Did not add package scaffolding or touch the shared benchmark folder.
 - Local validation was limited to syntax and whitespace checks because this environment has no installed `torch` and no visible NVIDIA driver.
+- RunPod A100 validation passed correctness and benchmarked against Liger 0.8.0; see the A100 validation section below.
 
 Recommended Stage 2A baseline implementation:
 
@@ -698,19 +699,92 @@ Device:
 
 - NVIDIA A100/H100 preferred per Forge context. Current local shell cannot validate GPU behavior.
 
+## A100 Validation Results
+
+Date: 2026-05-24
+Device: NVIDIA A100-SXM4-80GB
+Benchmark command: `python kernels/swiglu/benchmarks/benchmark_swiglu.py --suite a100 --dtype bf16 --rep 50 --warmup 20 --save results/swiglu_a100_bf16_with_liger.csv`
+Additional dtype command: `python kernels/swiglu/benchmarks/benchmark_swiglu.py --suite a100 --dtype fp16 fp32 --multipliers scaled --rep 30 --warmup 10 --save results/swiglu_a100_fp16_fp32_scaled.csv`
+Liger: editable `liger_kernel==0.8.0`; benchmark needed a Torch/Liger DTensor compatibility shim because Torch 2.4.1 exposes `DTensor` under `torch.distributed._tensor`.
+
+Correctness:
+
+```text
+python -m pytest tests/test_swiglu.py -xvs
+75 passed in 4.04s
+```
+
+Representative benchmark rows:
+
+| Shape | Multipliers | Provider | Forward ms | Full fwd+bwd ms | Peak MiB |
+| --- | --- | --- | ---: | ---: | ---: |
+| `2x2048x11008` | `1.0, 1.0` | Liger | 0.213 | 0.498 | 688 |
+| `2x2048x11008` | `1.0, 1.0` | Forge fast | 0.223 | 0.592 | 688 |
+| `2x2048x11008` | `1.0, 1.0` | Forge safe | 0.216 | 0.492 | 860 |
+| `2x2048x11008` | `0.7, 1.3` | Liger | 0.327 | 0.749 | 774 |
+| `2x2048x11008` | `0.7, 1.3` | Forge fast | 0.227 | 0.505 | 688 |
+| `2x2048x11008` | `0.7, 1.3` | Forge safe | 0.218 | 0.492 | 860 |
+| `4x2048x11008` | `1.0, 1.0` | Liger | 0.367 | 0.929 | 1376 |
+| `4x2048x11008` | `1.0, 1.0` | Forge fast | 0.380 | 0.917 | 1376 |
+| `4x2048x11008` | `1.0, 1.0` | Forge safe | 0.370 | 0.908 | 1720 |
+| `4x2048x11008` | `0.7, 1.3` | Liger | 0.588 | 1.352 | 1548 |
+| `4x2048x11008` | `0.7, 1.3` | Forge fast | 0.383 | 0.935 | 1376 |
+| `4x2048x11008` | `0.7, 1.3` | Forge safe | 0.373 | 0.921 | 1720 |
+| `1x32x65536` | `1.0, 1.0` | Liger | 0.087 | 0.227 | 32 |
+| `1x32x65536` | `1.0, 1.0` | Forge fast | 0.093 | 0.261 | 32 |
+| `1x32x65536` | `0.7, 1.3` | Liger | 0.116 | 0.309 | 36 |
+| `1x32x65536` | `0.7, 1.3` | Forge fast | 0.095 | 0.232 | 32 |
+
+Additional scaled-multiplier dtype rows:
+
+| Shape | Dtype | Provider | Forward ms | Full fwd+bwd ms | Peak MiB |
+| --- | --- | --- | ---: | ---: | ---: |
+| `2x2048x11008` | fp16 | Liger | 0.316 | 0.723 | 774 |
+| `2x2048x11008` | fp16 | Forge fast | 0.220 | 0.528 | 688 |
+| `4x2048x11008` | fp16 | Liger | 0.580 | 1.339 | 1548 |
+| `4x2048x11008` | fp16 | Forge fast | 0.373 | 0.932 | 1376 |
+| `2x2048x11008` | fp32 | Liger | 0.578 | 1.313 | 1548 |
+| `2x2048x11008` | fp32 | Forge fast | 0.371 | 0.952 | 1376 |
+| `4x2048x11008` | fp32 | Liger | 1.078 | 2.553 | 3096 |
+| `4x2048x11008` | fp32 | Forge fast | 0.673 | 1.725 | 2752 |
+
+Interpretation:
+
+- Default multipliers: Forge is effectively at Liger parity on the large Qwen-like shapes. Some full-mode rows favor Forge safe/packed and some favor Liger; treat this as parity/noise, not a decisive default-path win.
+- Non-default multipliers: Forge wins consistently on the large shapes because `down_multiplier` is fused into the Triton forward/backward kernels. At `4x2048x11008`, Forge fast full is about 1.45x faster than Liger and uses 1376 MiB vs Liger's 1548 MiB.
+- The non-default multiplier result holds for bf16, fp16, and fp32 on the large Qwen-like A100 shapes listed here. Smaller and launch-bound shapes remain mixed/noisy, and should not be used as the main performance claim.
+- Packed path: correct and useful for combined-projection layouts, but not a consistent speed win over separate tensors. Keep it for integration value rather than claiming universal performance superiority.
+- Safe path: preserves saved/user-visible tensors at extra peak memory. It can match fast timing on some large rows, but its purpose is semantics, not memory efficiency.
+- PyTorch baseline is much slower and higher memory than Forge/Liger on large shapes because the reference materializes/fuses less.
+
+Competitive conclusion:
+
+- This implementation clears the Stage 3 bar for a standalone SWIGLU P1 kernel.
+- It should be described as Liger parity for default multipliers plus a measured Forge win for non-default multipliers.
+- Further work should move toward MLP/LoRA integration or a flat long-indexing variant, not another undifferentiated row-wise rewrite.
+
 ## Known Failure Boundaries
 
-- Current environment lacks installed `torch` and visible NVIDIA driver, so live tests/benchmarks cannot run here yet.
+- Current local development environment lacks installed `torch` and visible NVIDIA driver, so live tests/benchmarks were run on RunPod A100 instead.
 - Stage 2A row-wise kernel inherits a 65536 hidden cap. Supporting larger hidden sizes requires either a flat kernel or a multi-block-per-row design.
 - Non-contiguous inputs add copy overhead if handled by `.contiguous()`.
 - Very small tensors may not show speedup due to launch overhead.
-- Activation-only kernels may be unable to substantially beat Liger if Liger is already bandwidth-bound.
+- Activation-only kernels do not substantially beat Liger on default multipliers because both are close to the same bandwidth/launch envelope.
+- Forge does beat Liger on non-default `down_multiplier` because it avoids Liger's extra full-tensor scalar multiply passes.
 - Full MLP/LoRA fusion is a different, larger kernel surface, but it may be required to beat Unsloth end-to-end.
 
-## Human Checkpoint Questions
+## Human Checkpoint Decision
 
-1. Should Stage 2 include `gate_multiplier` and `down_multiplier` in the first public API? My recommendation: yes, because the implementation cost is low and it tracks current Liger behavior.
-2. Should I create/switch to branch `day1/p1-swiglu-kernel` before code generation? Current branch is `main`.
-3. Which differentiating Stage 2B path should be required before calling SWIGLU complete: packed `gate_up`, flat long-indexing/shape selector, or LoRA MLP integration? My recommendation: packed `gate_up` first, flat selector second, LoRA MLP as a later kernel-family integration.
-4. Should I add minimal package scaffolding now so SWIGLU tests and benchmarks use stable imports?
-5. Do you want me to request approval to refresh `Liger-Kernel/` and `unsloth/` with `git pull --ff-only` before Stage 2, or continue from the current local checkouts plus web-checked source?
+Recommendation: mark standalone SWIGLU P1 complete and move to the next integration target.
+
+Resolved decisions:
+
+1. Keep `gate_multiplier` and `down_multiplier` in the public API; A100 data shows this is the measured Forge advantage over Liger for non-default multipliers.
+2. Keep `preserve_inputs=False` as the default training path; expose `preserve_inputs=True` for callers that need mutation safety.
+3. Keep packed `gate_up` support as layout coverage, not as a universal speed claim.
+4. Do not add package scaffolding in this pass, per user scope.
+
+Open next-step choices:
+
+1. Start the next MLP/LoRA integration, where Unsloth's real advantage lives.
+2. Add a flat long-indexing selector only if hidden sizes above 65536 or irregular shapes become a real requirement.
