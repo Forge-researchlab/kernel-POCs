@@ -1,6 +1,0 @@
-torch>=2.4.0
-triton>=3.0.0
-transformers>=4.40.0
-peft>=0.11.0
-datasets>=2.19.0
-pytest>=8.0.0
