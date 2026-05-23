@@ -1,0 +1,42 @@
+---
+description: Embedding kernel experiment versioning and research iteration workflow
+alwaysApply: true
+---
+
+# Embedding Kernel Research Workflow
+
+## Project Layout
+
+```
+kernels/embedding/
+├── reference/             # Read-only reference implementations
+├── experiments/v{N}/      # Versioned kernel experiments
+├── benchmarks/            # Benchmark harness + results/
+├── tests/                 # Correctness tests
+└── docs/                  # Design notes, profiling logs
+```
+
+## Experiment Versioning
+
+- A **version** (v1, v2, v3) = fundamentally different algorithmic approach
+- An **upgrade** (v1_upgrade_1) = tuning or fixing within the same approach
+- Never modify a previous version — copy forward and iterate
+- File naming: `embedding_kernel_v{N}.py` or `embedding_kernel_v{N}_upgrade_{M}.py`
+
+## Iteration Checklist
+
+Before moving to the next version:
+- [ ] Forward pass matches PyTorch reference
+- [ ] Backward pass matches PyTorch gradient
+- [ ] `gradcheck` passes in fp64 on small inputs
+- [ ] Tested across the key evaluation dimensions (below)
+- [ ] Benchmarked against PyTorch baseline
+- [ ] Key findings documented in the file's top docstring
+
+## Evaluation Dimensions
+
+Every backward strategy must be tested across:
+1. **Duplicate ratio** — all unique vs heavy duplicates (determines contention)
+2. **Sequence length** — short (256) to long (32k)
+3. **Embedding dimension** — small (768) to large (8192)
+4. **Vocab size** — 32k to 256k

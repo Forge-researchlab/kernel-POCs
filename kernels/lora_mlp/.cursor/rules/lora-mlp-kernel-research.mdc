@@ -1,0 +1,64 @@
+---
+description: LoRA MLP kernel experiment versioning and research iteration workflow
+alwaysApply: true
+---
+
+# LoRA MLP Kernel Research Workflow
+
+## Project Layout
+
+```
+kernels/lora_mlp/
+├── reference/             # Read-only reference implementations
+├── experiments/v{N}/      # Versioned kernel experiments
+├── benchmarks/            # Benchmark harness + results/
+├── tests/                 # Correctness tests
+├── docs/
+│   ├── research.md        # Research context and exploration axes
+│   └── benchmarks.md      # Benchmark methodology and results log
+└── CHANGELOG.md           # Version history with results
+```
+
+## Experiment Versioning
+
+- A **version** (v1, v2, v3) = fundamentally different algorithmic approach
+- An **upgrade** (v1_upgrade_1) = tuning or fixing within the same approach
+- Never modify a previous version — copy forward and iterate
+- File naming: `lora_mlp_kernel_v{N}.py` or `lora_mlp_kernel_v{N}_upgrade_{M}.py`
+
+## After Every Change
+
+1. Run correctness tests: `pytest tests/test_lora_mlp.py -v`
+2. Run benchmarks and save results: `python benchmarks/bench_lora_mlp.py --save benchmarks/results/`
+3. Update `CHANGELOG.md` with approach, results, and limitations
+4. Update `docs/benchmarks.md` results table with latest numbers
+5. Document key findings in the experiment file's top docstring
+
+## Iteration Checklist
+
+Before moving to the next version:
+- [ ] Forward pass matches PyTorch reference (bf16 + fp32)
+- [ ] Backward pass matches PyTorch gradient
+- [ ] `gradcheck` passes in fp64 on small inputs
+- [ ] Tested across key evaluation dimensions (below)
+- [ ] Benchmarked against PyTorch baseline at LLaMA-3 scale
+- [ ] Key findings documented in the file's top docstring
+- [ ] CHANGELOG.md updated
+- [ ] docs/benchmarks.md updated
+
+## Evaluation Dimensions
+
+Every kernel version must be tested across:
+1. **LoRA rank** — 8, 16, 32, 64 (determines if LoRA fits in registers vs SRAM)
+2. **Sequence length** — 512 to 4096 (scales the M dimension of the matmul)
+3. **Hidden / intermediate dim** — 4096/14336 (8B) to 5120/17920 (13B)
+4. **Batch size** — 1 to 8 (affects parallelism and memory pressure)
+5. **Dtype** — bf16 and fp32
+
+## Key Constraints
+
+- LoRA rank r is typically 8–64 (small enough for SRAM fusion)
+- MLP intermediate dim is ~3.5× hidden dim in LLaMA
+- The base matmul is compute-bound; the LoRA term is memory-bound
+- SwiGLU has two inputs (gate, up) sharing the same input tensor
+- Backward requires either saved intermediates or recomputation

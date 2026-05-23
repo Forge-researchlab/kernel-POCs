@@ -1,0 +1,62 @@
+---
+description: Triton GPU kernel development patterns and conventions
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Triton Kernel Development Conventions
+
+## File Layout
+
+Every kernel file follows this order:
+1. Module docstring — algorithm description, rationale for this version
+2. Imports (`torch`, `triton`, `triton.language as tl`)
+3. Forward kernel(s) decorated with `@triton.jit`
+4. Backward kernel(s) decorated with `@triton.jit`
+5. Constants and thresholds
+6. `torch.autograd.Function` wrapper
+
+## Triton Kernel Rules
+
+- Block size parameters (`BLOCK_SIZE_*`) must be powers of 2 and typed `tl.constexpr`
+- Always use bounds masks — never assume dimensions are block-aligned
+- Accumulate intermediate results in `tl.float32` regardless of input dtype
+- Cast to the target dtype only at the final `tl.store`
+- Prefer `tl.program_id(0)` for the row/batch axis, `tl.program_id(1)` for the column/feature axis
+
+## Autograd Wrapper
+
+```python
+class KernelFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, weight, indices):
+        # make inputs contiguous
+        # flatten variable-shape inputs
+        # allocate output
+        # compute grid with triton.cdiv
+        # launch kernel
+        # ctx.save_for_backward(...)
+        # reshape output to match input shape
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # retrieve saved tensors
+        # allocate grad as zeros
+        # launch backward kernel(s)
+        return grad_weight, None  # None for non-differentiable inputs
+```
+
+## Benchmarking
+
+- Baseline: always compare against the equivalent PyTorch op
+- Timing: use `torch.cuda.Event(enable_timing=True)`, never `time.time()`
+- Statistics: trim outliers (drop 2 highest and 2 lowest), report trimmed mean
+- Sweep the dimensions that matter for the specific op (sizes, dtypes, workload patterns)
+
+## Correctness
+
+Before benchmarking, always verify:
+1. Forward matches PyTorch reference (rtol=1e-3, atol=1e-3 for bf16; tighter for fp32)
+2. Backward gradient matches PyTorch (rtol=1e-2 for bf16, rtol=1e-4 for fp32)
+3. `torch.autograd.gradcheck` passes in fp64 on a small input

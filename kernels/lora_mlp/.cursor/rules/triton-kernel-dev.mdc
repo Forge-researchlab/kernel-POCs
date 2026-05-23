@@ -1,0 +1,52 @@
+---
+description: Triton kernel development best practices and patterns
+alwaysApply: true
+---
+
+# Triton Kernel Development
+
+## Code Style
+
+- Every kernel file starts with a module docstring explaining the approach, key design decisions, and known limitations
+- Use `@triton.autotune` with explicit configs rather than relying on defaults
+- Type-annotate all Python wrapper functions
+- Use `tl.constexpr` for compile-time constants (BLOCK sizes, num_warps)
+
+## Testing Pattern
+
+```python
+def test_forward_correctness():
+    """Compare fused kernel output against PyTorch reference."""
+    # Setup with deterministic seed
+    torch.manual_seed(42)
+    # Run both implementations
+    # Assert with rtol=1e-3, atol=1e-3 for bf16; tighter for fp32
+
+def test_backward_correctness():
+    """Compare gradients against PyTorch autograd."""
+
+def test_gradcheck():
+    """torch.autograd.gradcheck in fp64 on small inputs."""
+```
+
+## Benchmarking Pattern
+
+```python
+# Always use triton.testing.do_bench for GPU timing
+ms = triton.testing.do_bench(lambda: kernel_fn(...), warmup=3, rep=5)
+```
+
+## Common Pitfalls
+
+- bf16 accumulation: always accumulate in fp32, cast output back to bf16
+- Power-of-2 block sizes: Triton requires them for `tl.dot`
+- Host-device sync: avoid `.item()`, `.cpu()`, or Python control flow on GPU tensors in hot paths
+- Memory alignment: ensure tensor strides are compatible with block sizes
+- `tl.dot` requires both operands to be at least 16×16 for good performance
+
+## Debugging
+
+- Test in fp64 first (numerical issues are easier to spot)
+- Use small inputs (M=4, N=4, K=4) to trace individual tiles
+- Print block indices with `tl.device_print` (remove before benchmarking)
+- Compare tile-by-tile against a NumPy reference
