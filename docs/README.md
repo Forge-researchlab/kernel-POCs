@@ -1,13 +1,15 @@
 # Kernel Research Docs
 
-> Configure this folder by adding one focused research report per kernel or kernel family. Keep active task state in `../../TASKS.md`; use this folder for durable reasoning, competitor comparison, benchmark methodology, and failure boundaries that should be pushed with `kernel-POCs`.
+> Configure this folder by adding one focused research report per kernel or kernel family. These docs are running notes for both agents and the user: update them at each stage instead of reconstructing the reasoning at the end.
 
 Use this folder for kernel research before and during implementation in `../kernels/`.
+
+Do not maintain a separate kernel profile file. The per-kernel report here is the canonical place for math, competitor study, first-principles analysis, research, implementation decisions, correctness results, benchmark results, and known boundaries.
 
 Recommended report path:
 
 ```text
-docs/<kernel-name>-research.md
+docs/<kernel-name>.md
 ```
 
 Recommended report structure:
@@ -19,6 +21,8 @@ Recommended report structure:
 - Forward equation:
 - Backward gradients:
 - Numerical stability concerns:
+- Mathematical assumptions:
+- What is still unclear:
 
 ## Supported Surface
 - Shapes:
@@ -36,23 +40,58 @@ Recommended report structure:
 - API:
 - Fusion boundary:
 - Optimizations:
+- Optimized axes:
+- Input settings allowed:
+- Input settings unsupported / unclear:
 - Edge cases:
+- Current model/training usage context:
+- Surrounding kernels/components:
+- Fusion opportunities:
+- Why fusion likely stops where it does:
 - Pros:
 - Cons / gaps:
+- What appears unoptimized:
 
 ## Unsloth Comparison
 - Source paths:
 - API:
 - Fusion boundary:
 - Optimizations:
+- Optimized axes:
+- Input settings allowed:
+- Input settings unsupported / unclear:
 - Edge cases:
+- Current model/training usage context:
+- Surrounding kernels/components:
+- Fusion opportunities:
+- Why fusion likely stops where it does:
 - Pros:
 - Cons / gaps:
+- What appears unoptimized:
+
+## First-Principles Analysis
+- Unavoidable math:
+- Unavoidable memory traffic:
+- Avoidable intermediate tensors:
+- Recompute vs save decisions:
+- Fusion opportunities with surrounding kernels:
+- Fusion limitations / where to stop:
+- Edge cases worth targeting:
+- Compatibility targets worth supporting:
+- Shape regimes competitors may miss:
+- Numerical stability risks:
+- Backward correctness risks:
 
 ## External Research
-- Papers / issues / community kernels:
+- Papers / technical notes:
+- Triton examples / official guidance:
+- Community kernels / benchmark repos:
+- Liger GitHub issues / PRs:
+- Unsloth GitHub issues / PRs:
+- PyTorch / HuggingFace / community issues:
 - Useful ideas:
-- Rejected ideas:
+- Rejected ideas with reasons:
+- Missing research due to blocked network / approval:
 
 ## Improvement Hypotheses
 - Idea:
@@ -60,7 +99,9 @@ Recommended report structure:
 - Why it should matter:
 - Benefiting shapes / dtypes:
 - Risks and tradeoffs:
+- Correctness implications:
 - Measurement plan:
+- Fallback plan:
 
 ## Selected Design
 - Decision:
