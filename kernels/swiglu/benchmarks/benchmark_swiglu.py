@@ -24,6 +24,27 @@ from kernels.swiglu import torch_swiglu_packed_reference
 from kernels.swiglu import torch_swiglu_reference
 
 
+def _patch_liger_dtensor_compat() -> None:
+    try:
+        import torch.distributed.tensor as dist_tensor
+    except Exception:
+        return
+
+    if hasattr(dist_tensor, "DTensor"):
+        return
+
+    try:
+        from torch.distributed._tensor import DTensor
+    except Exception:
+        class DTensor:  # type: ignore[no-redef]
+            pass
+
+    dist_tensor.DTensor = DTensor
+
+
+_patch_liger_dtensor_compat()
+
+
 try:
     from liger_kernel.ops import LigerSiLUMulFunction
 except Exception as exc:
