@@ -26,8 +26,11 @@ from kernels.swiglu import torch_swiglu_reference
 
 try:
     from liger_kernel.ops import LigerSiLUMulFunction
-except Exception:
+except Exception as exc:
     LigerSiLUMulFunction = None
+    LIGER_IMPORT_ERROR = repr(exc)
+else:
+    LIGER_IMPORT_ERROR = None
 
 
 DTYPES = {
@@ -225,7 +228,10 @@ def run(args):
     rows = []
     providers = args.providers
     if "liger" in providers and LigerSiLUMulFunction is None:
-        print("warning: skipping liger provider because liger_kernel is not importable", file=sys.stderr)
+        print(
+            f"warning: skipping liger provider because liger_kernel is not importable: {LIGER_IMPORT_ERROR}",
+            file=sys.stderr,
+        )
         providers = [p for p in providers if p != "liger"]
 
     for dtype_name in args.dtype:

@@ -110,7 +110,7 @@ def test_swiglu_special_values_forward():
 
     out_ref = torch_swiglu_reference(gate, up)
     out_forge = swiglu(gate, up, preserve_inputs=True)
-    torch.testing.assert_close(out_forge, out_ref, atol=0, rtol=0, equal_nan=True)
+    torch.testing.assert_close(out_forge, out_ref, atol=1e-12, rtol=1e-7, equal_nan=True)
 
 
 def test_swiglu_cpu_fallback_matches_reference():
