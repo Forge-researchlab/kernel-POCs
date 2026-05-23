@@ -30,7 +30,8 @@ kerna-POCs/
 │   └── test_lora_qkv.py
 ├── benchmarks/
 │   └── bench_all.py
-├── requirements.txt
+├── pyproject.toml
+├── uv.lock
 └── README.md
 ```
 
@@ -66,15 +67,17 @@ Each kernel follows the same 5-step build process:
 
 ## Requirements
 
-- Python 3.10+
-- PyTorch 2.4+
-- Triton 3.0+
+- Python 3.11 or 3.12
+- uv
+- PyTorch
+- Triton
+- Liger Kernel
 - CUDA 12.1+
 
 ## Setup
 
 ```bash
-pip install -e .
+uv sync --dev
 ```
 
 ## Context
