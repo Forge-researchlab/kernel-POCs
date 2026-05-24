@@ -16,6 +16,10 @@ LIGER_SRC = WORKSPACE / "Liger-Kernel" / "src"
 if LIGER_SRC.exists():
     sys.path.insert(0, str(LIGER_SRC))
 
+UNSLOTH_SRC = WORKSPACE / "unsloth"
+if UNSLOTH_SRC.exists():
+    sys.path.insert(0, str(UNSLOTH_SRC))
+
 from kernels.geglu import geglu
 from kernels.geglu import geglu_packed
 from kernels.geglu import torch_geglu_packed_reference
@@ -29,6 +33,17 @@ except Exception as exc:
     LIGER_IMPORT_ERROR = repr(exc)
 else:
     LIGER_IMPORT_ERROR = None
+
+
+try:
+    from unsloth.kernels.geglu import geglu_approx_forward_kernel
+    from unsloth.kernels.geglu import geglu_exact_forward_kernel
+except Exception as exc:
+    geglu_approx_forward_kernel = None
+    geglu_exact_forward_kernel = None
+    UNSLOTH_IMPORT_ERROR = repr(exc)
+else:
+    UNSLOTH_IMPORT_ERROR = None
 
 
 DTYPES = {
@@ -58,6 +73,7 @@ PROVIDERS = {
     "packed_torch",
     "packed_forge",
     "liger",
+    "unsloth",
 }
 
 
@@ -158,6 +174,16 @@ def _activation(provider: str, x, gate_w, up_w, packed_w, approximate: str):
         gate = F.linear(x, gate_w)
         up = F.linear(x, up_w)
         return LigerGELUMulFunction.apply(gate, up)
+    if provider == "unsloth":
+        gate = F.linear(x, gate_w)
+        up = F.linear(x, up_w)
+        if approximate == "tanh":
+            if geglu_approx_forward_kernel is None:
+                raise RuntimeError(f"Unsloth is not importable: {UNSLOTH_IMPORT_ERROR}")
+            return geglu_approx_forward_kernel(gate, up)
+        if geglu_exact_forward_kernel is None:
+            raise RuntimeError(f"Unsloth is not importable: {UNSLOTH_IMPORT_ERROR}")
+        return geglu_exact_forward_kernel(gate, up)
     raise ValueError(f"unknown provider: {provider}")
 
 
@@ -185,6 +211,9 @@ def _bench_forward(provider: str, mode: str, base, approximate: str, warmup: int
 
 def _bench_full(provider: str, mode: str, base, approximate: str, warmup: int, rep: int):
     """Inputs: provider/mode/base tensors. Outputs: ms and peak bytes. Logic: full autograd timing."""
+    if provider == "unsloth":
+        return None, None
+
     base_x, base_gate_w, base_up_w, base_packed_w, base_down_w, gateup_grad, mlp_grad = base
     state = {}
 
@@ -246,6 +275,9 @@ def run(args):
     if "liger" in providers and LigerGELUMulFunction is None:
         print(f"warning: skipping liger: {LIGER_IMPORT_ERROR}", file=sys.stderr)
         providers = [p for p in providers if p != "liger"]
+    if "unsloth" in providers and (geglu_approx_forward_kernel is None or geglu_exact_forward_kernel is None):
+        print(f"warning: skipping unsloth: {UNSLOTH_IMPORT_ERROR}", file=sys.stderr)
+        providers = [p for p in providers if p != "unsloth"]
 
     rows = []
     for dtype_name in args.dtype:
@@ -266,6 +298,10 @@ def run(args):
                             ms, peak = _bench_forward(provider, mode, base, approximate, args.warmup, args.rep)
                         elif mode.endswith("_full"):
                             ms, peak = _bench_full(provider, mode, base, approximate, args.warmup, args.rep)
+                            if ms is None:
+                                if provider == "unsloth":
+                                    print("warning: skipping unsloth full mode; standalone Unsloth GEGLU has no autograd wrapper", file=sys.stderr)
+                                continue
                         else:
                             raise ValueError(f"unknown mode: {mode}")
 
@@ -299,7 +335,12 @@ def parse_args():
     parser.add_argument("--suite", choices=sorted(SUITES), default="smoke")
     parser.add_argument("--dtype", choices=sorted(DTYPES), nargs="+", default=["bf16"])
     parser.add_argument("--approximate", choices=["tanh", "none"], nargs="+", default=["tanh"])
-    parser.add_argument("--providers", choices=sorted(PROVIDERS), nargs="+", default=["separate_torch", "separate_forge", "packed_torch", "packed_forge", "liger"])
+    parser.add_argument(
+        "--providers",
+        choices=sorted(PROVIDERS),
+        nargs="+",
+        default=["separate_torch", "separate_forge", "packed_torch", "packed_forge", "liger", "unsloth"],
+    )
     parser.add_argument(
         "--modes",
         choices=["gateup_forward", "gateup_full", "mlp_forward", "mlp_full"],
