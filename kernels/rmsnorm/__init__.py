@@ -4,8 +4,10 @@ Available versions:
     v1: forge_rmsnorm_v1.py — placeholder baseline, no offset support, kept for v1-vs-v2 comparison.
     v2: forge_rmsnorm_v2.py — Liger-style offset constexpr + casting modes + SM-proportional dW partials.
     v3: forge_rmsnorm_v3.py — v2 body + @triton.autotune over (num_warps, num_stages).
+    v4: forge_rmsnorm_v4.py — v3 + Unsloth-style in_place dY→dX backward (~30% faster bwd
+                              at full-dW shapes; ~1.4× faster than Liger on fair fwd+bwd).
 
-Default `apply_rmsnorm` re-exports v3 (the shipping kernel). The `forge.patch`
+Default `apply_rmsnorm` re-exports v4 (the shipping kernel). The `forge.patch`
 layer imports `apply_rmsnorm` from this package via `forge/forge/kernels/rmsnorm.py`.
 
 Unversioned legacy symbols (`ForgeRMSNormFunction`, `rmsnorm`, `rmsnorm_forward`,
@@ -32,6 +34,7 @@ try:
         ForgeRMSNormv2Function,
         ForgeRMSNormv2,
         apply_rmsnorm_v2,
+        torch_rmsnorm_reference_v2,
     )
     _V2_AVAILABLE = True
 except ImportError:  # pragma: no cover — v2 not built yet
@@ -47,9 +50,22 @@ try:
 except ImportError:  # pragma: no cover — v3 not built yet
     _V3_AVAILABLE = False
 
+try:
+    from .forge_rmsnorm_v4 import (
+        ForgeRMSNormv4Function,
+        ForgeRMSNormv4,
+        apply_rmsnorm_v4,
+        torch_rmsnorm_reference_v4,
+    )
+    _V4_AVAILABLE = True
+except ImportError:  # pragma: no cover — v4 not built yet
+    _V4_AVAILABLE = False
 
-# Default `apply_rmsnorm` — v3 if available, else v2, else v1.
-if _V3_AVAILABLE:
+
+# Default `apply_rmsnorm` — v4 (latest) if available, else v3, else v2, else v1.
+if _V4_AVAILABLE:
+    apply_rmsnorm = apply_rmsnorm_v4
+elif _V3_AVAILABLE:
     apply_rmsnorm = apply_rmsnorm_v3
 elif _V2_AVAILABLE:
     apply_rmsnorm = apply_rmsnorm_v2
@@ -90,6 +106,8 @@ __all__ = [
     "ForgeRMSNormFunction", "rmsnorm", "rmsnorm_forward", "rmsnorm_backward",
 ]
 if _V2_AVAILABLE:
-    __all__ += ["ForgeRMSNormv2Function", "ForgeRMSNormv2", "apply_rmsnorm_v2"]
+    __all__ += ["ForgeRMSNormv2Function", "ForgeRMSNormv2", "apply_rmsnorm_v2", "torch_rmsnorm_reference_v2"]
 if _V3_AVAILABLE:
     __all__ += ["ForgeRMSNormv3Function", "ForgeRMSNormv3", "apply_rmsnorm_v3"]
+if _V4_AVAILABLE:
+    __all__ += ["ForgeRMSNormv4Function", "ForgeRMSNormv4", "apply_rmsnorm_v4", "torch_rmsnorm_reference_v4"]

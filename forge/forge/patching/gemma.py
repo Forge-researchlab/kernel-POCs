@@ -22,8 +22,11 @@ GEMMA_MAPPING = {
     "GemmaRMSNorm":     ("rmsnorm",   {"offset": 1.0}),
     "Gemma2RMSNorm":    ("rmsnorm",   {"offset": 1.0}),
 
-    # MLP — true GeGLU/GELU path is not wired yet; keep it as an explicit stub
-    # so forge.patch(model) silently skips it instead of applying the SiLU path.
+    # MLP — Gemma uses GeGLU (GELU), which lives in its own kernel
+    # (kernels/geglu/, the H6 deliverable). Until that's wired, the "geglu"
+    # entry in core._FORWARD_MAKERS is a stub and forge.patch silently skips
+    # these. Pointing the mapping at "geglu" (not "swiglu") prevents a
+    # SiLU-only swiglu kernel from accidentally running on a GELU MLP.
     "GemmaMLP":         ("geglu",     {"activation": "gelu"}),
     "Gemma2MLP":        ("geglu",     {"activation": "gelu"}),
 

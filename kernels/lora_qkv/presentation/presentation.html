@@ -1672,12 +1672,12 @@
     current = idx;
     // Briefly disable transition so we can position it off-screen
     slides[current].style.transition = 'none';
-    slides[current].classList.add(forward ? '' : 'enter-left');
+    if (!forward) slides[current].classList.add('enter-left');
     // Force reflow so the position takes effect before we animate
     slides[current].offsetHeight;
     // Re-enable transition and activate
     slides[current].style.transition = '';
-    slides[current].classList.remove('enter-left');
+    if (!forward) slides[current].classList.remove('enter-left');
     slides[current].classList.add('active');
     slides[current].scrollTop = 0;
 

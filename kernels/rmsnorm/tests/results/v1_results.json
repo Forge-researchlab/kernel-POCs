@@ -1,0 +1,409 @@
+{
+  "kernel": {
+    "version": "v1",
+    "grid": "(n_rows,)",
+    "backward_strategy": "per-row-block partials (16 rows/program) + Python sum(0)",
+    "offset_support": false,
+    "casting_modes": false,
+    "autotune": false
+  },
+  "environment": {
+    "python": "3.11.10",
+    "torch": "2.4.1+cu124",
+    "triton": "3.0.0",
+    "platform": "Linux-6.8.0-110-generic-x86_64-with-glibc2.35",
+    "cuda_available": true,
+    "cuda_device_name": "NVIDIA A100-SXM4-80GB",
+    "cuda_device_capability": [
+      8,
+      0
+    ]
+  },
+  "timestamp_utc": "2026-05-24T11:47:58.942921+00:00",
+  "results": {
+    "forward_correctness": {
+      "summary": {
+        "total": 12,
+        "passed": 12,
+        "failed": 0
+      },
+      "cases": [
+        {
+          "shape_label": "tiny",
+          "shape": {
+            "batch": 1,
+            "seq": 8,
+            "hidden": 64
+          },
+          "dtype": "torch.bfloat16",
+          "diff_v1_vs_ref": 0.0,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "tiny",
+          "shape": {
+            "batch": 1,
+            "seq": 8,
+            "hidden": 64
+          },
+          "dtype": "torch.float16",
+          "diff_v1_vs_ref": 0.0,
+          "tolerance": {
+            "atol": 0.02,
+            "rtol": 0.02
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "tiny",
+          "shape": {
+            "batch": 1,
+            "seq": 8,
+            "hidden": 64
+          },
+          "dtype": "torch.float32",
+          "diff_v1_vs_ref": 7.152557373046875e-07,
+          "tolerance": {
+            "atol": 0.0001,
+            "rtol": 1e-05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.bfloat16",
+          "diff_v1_vs_ref": 0.0,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.float16",
+          "diff_v1_vs_ref": 0.001953125,
+          "tolerance": {
+            "atol": 0.02,
+            "rtol": 0.02
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.float32",
+          "diff_v1_vs_ref": 9.5367431640625e-07,
+          "tolerance": {
+            "atol": 0.0001,
+            "rtol": 1e-05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "diff_v1_vs_ref": 0.0078125,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "diff_v1_vs_ref": 0.001953125,
+          "tolerance": {
+            "atol": 0.02,
+            "rtol": 0.02
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.float32",
+          "diff_v1_vs_ref": 9.5367431640625e-07,
+          "tolerance": {
+            "atol": 0.0001,
+            "rtol": 1e-05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "diff_v1_vs_ref": 0.0078125,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "diff_v1_vs_ref": 0.00390625,
+          "tolerance": {
+            "atol": 0.02,
+            "rtol": 0.02
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.float32",
+          "diff_v1_vs_ref": 9.5367431640625e-07,
+          "tolerance": {
+            "atol": 0.0001,
+            "rtol": 1e-05
+          },
+          "passed": true
+        }
+      ]
+    },
+    "backward_correctness": {
+      "summary": {
+        "total": 4,
+        "passed": 4,
+        "failed": 0
+      },
+      "cases": [
+        {
+          "shape_label": "tiny",
+          "shape": {
+            "batch": 1,
+            "seq": 8,
+            "hidden": 64
+          },
+          "dtype": "torch.bfloat16",
+          "dx_diff": 0.015625,
+          "dw_diff": 0.015625,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "tiny",
+          "shape": {
+            "batch": 1,
+            "seq": 8,
+            "hidden": 64
+          },
+          "dtype": "torch.float32",
+          "dx_diff": 2.384185791015625e-07,
+          "dw_diff": 9.5367431640625e-07,
+          "tolerance": {
+            "atol": 0.0001,
+            "rtol": 1e-05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "dx_diff": 0.03125,
+          "dw_diff": 1.0,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.float32",
+          "dx_diff": 1.430511474609375e-06,
+          "dw_diff": 2.6702880859375e-05,
+          "tolerance": {
+            "atol": 0.0001,
+            "rtol": 1e-05
+          },
+          "passed": true
+        }
+      ]
+    },
+    "gradcheck_fp64": {
+      "passed": false,
+      "expected_failure": true,
+      "reason": "v1 forces fp32 internal accumulation; fp64 perturbations are lost in cast. v2 fixes this via ACC_DTYPE constexpr.",
+      "error": "CompilationError: at 20:4:\n    n_cols: tl.constexpr,\n    ROWS_PER_PROGRAM: tl.constexpr,\n    BLOCK_SIZE: tl.constexpr,\n):\n    row_block_idx = tl.program_id(0).to(tl.int64)\n    col_offsets = tl.arange(0, BLOCK_SIZE)\n    mask = col_offsets < n_cols\n\n    weight = tl.load(weight_ptr + col_offsets, mask=mask, other=0.0)\n    dweight_acc = tl.zeros((BLOCK_SIZE,), dtype=tl.float32)\n\n    for row_offset in range(ROWS_PER_PROGRAM):\n    ^\nAssertionError('Loop-carried variable dweight_acc has initial type <[32], fp32> but is re-assigned to <[32], fp64> in loop! Please make sure that the type stays consistent.')"
+    },
+    "timing": {
+      "cases": [
+        {
+          "shape_label": "tiny",
+          "shape": {
+            "batch": 1,
+            "seq": 8,
+            "hidden": 64
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "pytorch_ref": 0.04259537532925606,
+            "forge_v1": 0.00824064388871193
+          },
+          "speedup_vs_pytorch": 5.168937755895919
+        },
+        {
+          "shape_label": "tiny",
+          "shape": {
+            "batch": 1,
+            "seq": 8,
+            "hidden": 64
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "pytorch_ref": 0.03382977098226547,
+            "forge_v1": 0.007113205268979073
+          },
+          "speedup_vs_pytorch": 4.755910971640063
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "pytorch_ref": 0.053836751729249954,
+            "forge_v1": 0.010172951966524124
+          },
+          "speedup_vs_pytorch": 5.292146459199768
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "pytorch_ref": 0.05330566689372063,
+            "forge_v1": 0.01027748268097639
+          },
+          "speedup_vs_pytorch": 5.186646239004553
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "pytorch_ref": 0.26263225078582764,
+            "forge_v1": 0.029602572321891785
+          },
+          "speedup_vs_pytorch": 8.871940179050084
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "pytorch_ref": 0.26186543703079224,
+            "forge_v1": 0.0300894845277071
+          },
+          "speedup_vs_pytorch": 8.70288877131346
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "pytorch_ref": 0.4829985201358795,
+            "forge_v1": 0.04939698800444603
+          },
+          "speedup_vs_pytorch": 9.777894152016044
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "pytorch_ref": 0.47965073585510254,
+            "forge_v1": 0.04939258471131325
+          },
+          "speedup_vs_pytorch": 9.710986753548854
+        }
+      ]
+    }
+  }
+}

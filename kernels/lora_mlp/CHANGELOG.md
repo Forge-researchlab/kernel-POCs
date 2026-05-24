@@ -147,6 +147,59 @@ A small smaller-shape config (b=1, s=2048, r=8) shows v5_train at 1.19x vs v3 (3
 - **Backward unchanged from v3.** Packing only helps the forward path because each backward matmul has a different input (dY, df, de, X) — there is no shared input X to reuse. Backward still uses Unsloth's optimized in-place buffer-reuse pattern from v3, which is already near-optimal.
 - **Mega-GEMM output is non-contiguous in N.** Slices like `result[:, :I]` are stride-`(2*I+2*r, 1)` rather than stride-`(I, 1)`. The Triton epilogue handles this via explicit `stride_em / stride_en` arguments. The down-projection `out_slice` has to be `.contiguous()`-copied before in-place `addmm_` for the LoRA-B term, which adds one O(M·H) write — but this is dwarfed by the matmul time at LLaMA scale.
 
+### v5_upgrade_1 — 2026-05-24
+
+#### Approach
+Two cuBLAS-tile-alignment fixes on top of v5, identified by the perf-analysis microbench in [`docs/analysis/v5_packing_diagnosis.md`](docs/analysis/v5_packing_diagnosis.md):
+1. **Drop down-phase packing.** v5's packed [M, H+r] mega-output costs both a worse cuBLAS tile (76% peak at N=4112 vs 82% peak at N=4096) and a forced 0.15 ms `.contiguous()` copy on the H slice before `addmm_`. Reverting to v3's two-cuBLAS-call pattern (`out = h @ W_down^T`, then `xa_down = h @ A_down^T`, then `out.addmm_(xa_down, B_down^T, ...)`) skips both penalties.
+2. **Pad the gate+up mega-matrix to a multiple of 128.** `2*I + 2*r = 28704` falls off cuBLAS's preferred N tile width (128). Appending zero-rows so N=28800 lifts the mega-GEMM from 79.6% → 83.2% peak (+0.9 ms in isolation). The padded columns of the result are zero @ X = 0 and are simply ignored when slicing.
+
+The Triton SwiGLU+LoRA epilogue is reused unchanged from v5 (imported, not copied). Inference path is the v5 path verbatim — pre-merging LoRA already sidesteps both pain points.
+
+#### Changes
+- `experiments/v5/lora_mlp_kernel_v5_upgrade_1.py`: new file with
+  - `pack_gate_up_weights_padded()` returning `(W_mega_padded, pad_rows)`
+  - `_v5_upgrade_1_forward_impl()` (padded gate+up mega + v3-style down)
+  - `lora_mlp_v5_upgrade_1()` and `LoRAMLPv5_upgrade_1(autograd.Function)`
+  - `lora_mlp_v5_upgrade_1_inference` re-exports v5's inference path unchanged
+- v5 kernel file is **not modified** (project convention).
+- `tests/test_lora_mlp.py`: new `TestV5Upgrade1` class with 21 tests (forward fp32/bf16, rank sweep 8/16/32/64, vs Unsloth, no-LoRA, 2D/3D/non-pow-2 inputs, LLaMA-8B/13B shapes, fp64 gradcheck, bf16 backward vs reference). Adds two specific tests: `test_padded_alignment` (mega-N divisible by 128 across ranks) and `test_padded_correctness_matches_v5` (bf16 output matches v5 within tolerance).
+- `benchmarks/bench_lora_mlp.py`: adds `v5_up1_train_ms`, `v5_up1_train_vs_unsloth`, `v5_up1_train_vs_v3`, `v5_up1_train_vs_v5` columns; pre-packs `W_mega_padded` once outside the timed loop, mirroring the v5 setup. CSVs now write to `v5_upgrade_1_<timestamp>.csv`.
+- `benchmarks/microbench_v5_upgrade_1.py`: new microbench measuring (a) v3 vs v5 vs v5_upgrade_1 gate+up matmul, (b) v3 vs v5 down matmul end-to-end, (c) end-to-end training forward at LLaMA-8B/r16.
+
+#### Results
+
+**LLaMA-8B forward (bf16, batch=4, seq=2048, rank=16, M=8192, H=4096, I=14336):**
+
+5-run medians with `triton.testing.do_bench(warmup=20, rep=100)`:
+
+| Implementation | Time (ms) | vs Unsloth | vs v3 | Launches |
+|----------------|-----------|------------|-------|----------|
+| Unsloth `apply_lora_mlp_swiglu` | 12.72 | 1.00x | — | 10 |
+| v3 (cuBLAS + Triton epilogue) | 12.48 | 1.02x | 1.00x | 8 |
+| v5 training (packed) | 12.39 | 1.03x | 1.01x | 4 |
+| **v5_upgrade_1 training (padded gate+up + v3-style down)** | **12.13** | **1.05x** | **1.03x** | **5** |
+| v5 inference (pre-merged) | 11.78 | 1.08x | 1.06x | 4 |
+
+**Microbench (matmul work only, M=8192, bf16):**
+
+| Phase | v3 | v5 | v5_upgrade_1 |
+|-------|------|------|--------------|
+| gate+up matmul | 8.59 ms / 71.8% peak | 8.35 ms / 74.0% peak (N=28704) | **7.44 ms / 83.2% peak (N=28800)** |
+| down matmul end-to-end | 3.95 ms / 78.5% peak | 4.27 ms / 72.6% peak | **3.95 ms / 78.5% peak** |
+
+**End-to-end full sweep:** see `benchmarks/results/v5_upgrade_1_20260524_112741.csv`. v5_upgrade_1 beats or ties v3 across all 20 configurations swept; the gain is 1–3% at LLaMA-8B/M=8192 and 3–6% at smaller M=2048 where launch overhead is a larger share.
+
+#### Key Finding
+**Both fixes are real wins.** The microbench cleanly attributes ~0.9 ms to the padding fix and ~0.32 ms to dropping down packing — total ~1.2 ms of matmul-only savings. End-to-end, v5_upgrade_1 captures ~0.35 ms of that vs v5 and ~0.35 ms vs v3 at LLaMA-8B/r=16, satisfying the ≥1% beats-v3 success criterion (we land at +2.78%).
+
+The asymmetry between the 1.2 ms isolated matmul savings and the 0.35 ms end-to-end gain is the same effect documented in the v5 diagnosis: the Triton SwiGLU+LoRA epilogue still reads `e_base`/`g_base` as non-contiguous slices of the gate+up mega-output (stride 0 = 28800 instead of 14336), which costs ~100–200 µs of L2-locality penalty even when the mega-matmul itself is fast. Closing that gap would require a different epilogue design (e.g. allocate `e_base` and `g_base` as separate contiguous buffers via two cuBLAS calls), which trades the LoRA-A absorption trick for clean strides — a different algorithmic family, so future work.
+
+#### Limitations
+- **One extra launch vs v5** (5 vs 4): v5_upgrade_1 has separate `h @ W_down^T` and `h @ A_down^T` calls instead of v5's packed down. Net wall-clock still wins because the cuBLAS-tile penalty was bigger than the saved launch overhead.
+- **Pad rows waste a tiny amount of compute.** At LLaMA-8B/r=16, padding 28704 → 28800 adds 96 zero-rows × 4096 columns = 0.4M extra FMAs per matmul = 0.3% of the total. Worth it because cuBLAS picks a much better tile.
+- **Backward unchanged.** Same as v5 — backward matmuls don't share an input.
+
 ---
 
 ## [v3] — 2026-05-23

@@ -6,6 +6,7 @@ Compares (full MLP forward at LLaMA scale):
   - Triton v1 fused per-projection LoRA matmul
   - v3 cuBLAS + Triton fused LoRA-SwiGLU epilogue (8 launches)
   - v5 packed cuBLAS + Triton epilogue, training path (4 launches)
+  - v5_upgrade_1 padded gate+up mega + v3-style down (5 launches)
   - v5 inference path with pre-merged weights (4 launches; cuBLAS-only when
     cublasLt SWISH is available, otherwise still 4 launches with 1 Triton op)
 
@@ -41,6 +42,10 @@ from experiments.v5.lora_mlp_kernel_v5 import (
     pack_gate_up_weights,
     pack_down_weights,
     prepare_inference_weights,
+)
+from experiments.v5.lora_mlp_kernel_v5_upgrade_1 import (
+    lora_mlp_v5_upgrade_1,
+    pack_gate_up_weights_padded,
 )
 
 
@@ -122,6 +127,21 @@ def bench_mlp(batch, seq_len, hidden, intermediate, rank, dtype, lora_scale=1.0)
             W_down_packed=W_down_packed,
         )
 
+    # ── v5_upgrade_1 training (padded gate+up mega + v3-style down) ──
+    # Pack the padded mega-matrix once outside the timed loop, just like v5.
+    W_mega_padded, _pad_rows = pack_gate_up_weights_padded(
+        gp["W"], up["W"], gp["A"], up["A"]
+    )
+
+    def v5_upgrade_1_train_fn():
+        return lora_mlp_v5_upgrade_1(
+            X,
+            gp["W"], gp["A"], gp["B"], gp["s"],
+            up["W"], up["A"], up["B"], up["s"],
+            dp["W"], dp["A"], dp["B"], dp["s"],
+            W_mega_padded=W_mega_padded,
+        )
+
     # ── v5 inference (pre-merged + transposed once) ──
     W_gate_eff_T, W_up_eff_T, W_down_eff_T = prepare_inference_weights(
         gp["W"], gp["A"], gp["B"], gp["s"],
@@ -135,6 +155,7 @@ def bench_mlp(batch, seq_len, hidden, intermediate, rank, dtype, lora_scale=1.0)
     ms_unsloth = triton.testing.do_bench(unsloth_fn, warmup=WARMUP, rep=REP)
     ms_v3 = triton.testing.do_bench(v3_fn, warmup=WARMUP, rep=REP)
     ms_v5_train = triton.testing.do_bench(v5_train_fn, warmup=WARMUP, rep=REP)
+    ms_v5_up1_train = triton.testing.do_bench(v5_upgrade_1_train_fn, warmup=WARMUP, rep=REP)
     ms_v5_inf = triton.testing.do_bench(v5_inf_fn, warmup=WARMUP, rep=REP)
 
     def safe_div(a, b):
@@ -149,9 +170,13 @@ def bench_mlp(batch, seq_len, hidden, intermediate, rank, dtype, lora_scale=1.0)
         "unsloth_ms": round(ms_unsloth, 4),
         "v3_ms": round(ms_v3, 4),
         "v5_train_ms": round(ms_v5_train, 4),
+        "v5_up1_train_ms": round(ms_v5_up1_train, 4),
         "v5_inf_ms": round(ms_v5_inf, 4),
         "v5_train_vs_unsloth": safe_div(ms_unsloth, ms_v5_train),
         "v5_train_vs_v3": safe_div(ms_v3, ms_v5_train),
+        "v5_up1_train_vs_unsloth": safe_div(ms_unsloth, ms_v5_up1_train),
+        "v5_up1_train_vs_v3": safe_div(ms_v3, ms_v5_up1_train),
+        "v5_up1_train_vs_v5": safe_div(ms_v5_train, ms_v5_up1_train),
         "v5_inf_vs_unsloth": safe_div(ms_unsloth, ms_v5_inf),
         "v5_inf_vs_v3": safe_div(ms_v3, ms_v5_inf),
     }
@@ -188,7 +213,7 @@ def run_projection_sweep():
 
 
 def run_mlp_sweep():
-    """Full MLP benchmark sweep across Unsloth/v3/v5_train/v5_inf."""
+    """Full MLP benchmark sweep across Unsloth/v3/v5_train/v5_up1_train/v5_inf."""
     results = []
     configs = [
         # LLaMA-8B
@@ -212,8 +237,10 @@ def run_mlp_sweep():
                     f"unsl={result['unsloth_ms']:.2f} "
                     f"v3={result['v3_ms']:.2f} "
                     f"v5_tr={result['v5_train_ms']:.2f} "
+                    f"v5up1_tr={result['v5_up1_train_ms']:.2f} "
                     f"v5_in={result['v5_inf_ms']:.2f} | "
                     f"v5_tr/v3={result['v5_train_vs_v3']:.2f}x "
+                    f"v5up1/v3={result['v5_up1_train_vs_v3']:.2f}x "
                     f"v5_in/v3={result['v5_inf_vs_v3']:.2f}x"
                 )
     return results
@@ -270,17 +297,23 @@ def main():
             print(f"  down:    unsloth={r2['unsloth_ms']:.3f}ms triton={r2['triton_v1_ms']:.3f}ms speedup={r2['speedup']:.2f}x")
 
         if args.mode in ("mlp", "all"):
-            print("\nFull MLP forward (Unsloth vs v3 vs v5_train vs v5_inf):")
+            print("\nFull MLP forward (Unsloth vs v3 vs v5_train vs v5_up1_train vs v5_inf):")
             r3 = bench_mlp(batch, seq, args.hidden, args.intermediate, rank, torch.bfloat16)
             print(
                 f"  unsloth={r3['unsloth_ms']:.3f}ms "
                 f"v3={r3['v3_ms']:.3f}ms "
                 f"v5_train={r3['v5_train_ms']:.3f}ms "
+                f"v5_up1_train={r3['v5_up1_train_ms']:.3f}ms "
                 f"v5_inf={r3['v5_inf_ms']:.3f}ms"
             )
             print(
-                f"  v5_train: {r3['v5_train_vs_unsloth']:.2f}x vs Unsloth, {r3['v5_train_vs_v3']:.2f}x vs v3 | "
-                f"v5_inf: {r3['v5_inf_vs_unsloth']:.2f}x vs Unsloth, {r3['v5_inf_vs_v3']:.2f}x vs v3"
+                f"  v5_train:     {r3['v5_train_vs_unsloth']:.2f}x vs Unsloth, {r3['v5_train_vs_v3']:.2f}x vs v3"
+            )
+            print(
+                f"  v5_up1_train: {r3['v5_up1_train_vs_unsloth']:.2f}x vs Unsloth, {r3['v5_up1_train_vs_v3']:.2f}x vs v3, {r3['v5_up1_train_vs_v5']:.2f}x vs v5"
+            )
+            print(
+                f"  v5_inf:       {r3['v5_inf_vs_unsloth']:.2f}x vs Unsloth, {r3['v5_inf_vs_v3']:.2f}x vs v3"
             )
 
         if args.save:
@@ -288,7 +321,7 @@ def main():
             results = []
             if args.mode in ("mlp", "all"):
                 results.append(r3)
-            save_results(results, os.path.join(args.save, f"v5_{timestamp}.csv"))
+            save_results(results, os.path.join(args.save, f"v5_upgrade_1_{timestamp}.csv"))
         return
 
     # Sweep mode
@@ -304,7 +337,7 @@ def main():
 
     if args.save and all_results:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        save_results(all_results, os.path.join(args.save, f"v5_{timestamp}.csv"))
+        save_results(all_results, os.path.join(args.save, f"v5_upgrade_1_{timestamp}.csv"))
 
 
 if __name__ == "__main__":

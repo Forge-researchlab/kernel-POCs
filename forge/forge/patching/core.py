@@ -81,38 +81,54 @@ def _make_embedding_forward(module, config):
 
 
 def _make_rmsnorm_forward(module, config):
-    """Qwen/Gemma RMSNorm.forward -> ForgeRMSNormFunction.
+    """{Qwen,Gemma,Llama}RMSNorm.forward -> apply_rmsnorm(x, weight, eps, offset, casting_mode).
 
-    Closes over the live module weight, so PEFT/FSDP updates remain visible.
-    Qwen uses offset=0.0; Gemma-style RMSNorm can use offset=1.0.
+    Reads `offset` from config (0.0 for Qwen/Llama, 1.0 for Gemma) and picks
+    casting_mode by default ("gemma" when offset==1.0, else "llama"); both can
+    be overridden via the mapping config. Reads `eps` from `module.variance_epsilon`
+    (Qwen2/3) or falls back to `module.eps` (Gemma).
     """
     from forge.kernels.rmsnorm import apply_rmsnorm
 
-    eps = getattr(module, "variance_epsilon", None)
-    if eps is None:
-        eps = getattr(module, "eps", 1e-6)
     offset = float(config.get("offset", 0.0))
+    casting_mode = config.get("casting_mode", "gemma" if offset == 1.0 else "llama")
+    eps = float(getattr(module, "variance_epsilon",
+                        getattr(module, "eps", 1e-6)))
 
     def forward(hidden_states):
-        return apply_rmsnorm(hidden_states, module.weight, eps=eps, offset=offset)
+        # Close over `module.weight` (not a copy) so LoRA updates flow live.
+        return apply_rmsnorm(hidden_states, module.weight, eps=eps,
+                             offset=offset, casting_mode=casting_mode)
     return forward
 
 
 def _make_swiglu_forward(module, config):
-    """Qwen MLP.forward -> down_proj(Forge SwiGLU(gate_proj(x), up_proj(x)))."""
-    from forge.kernels.swiglu import swiglu
+    """Qwen2/3 MLP.forward -> down_proj( swiglu(gate_proj(x), up_proj(x)) ).
 
+    The SwiGLU kernel only fuses `silu(gate) * up`; the three projections stay
+    as the module's own `nn.Linear` (or PEFT-wrapped LoRA Linear) so PEFT
+    adapters keep working through `forge.patch`. Calling the submodules
+    (`module.gate_proj(x)`) instead of using their `.weight` directly is what
+    lets adapter-wrapped Linears intercept the call.
+
+    Rejects non-`silu` activations at build time so a Gemma-style
+    `activation="gelu"` mapping fails loudly instead of silently producing
+    wrong outputs through a SiLU-only kernel. Gemma's GELU path lives in the
+    separate `geglu` kernel.
+    """
     activation = config.get("activation", "silu")
-    if activation not in ("silu", "swish"):
+    if activation != "silu":
         raise NotImplementedError(
-            f"Forge SwiGLU patch only supports SiLU/Swish today; got activation={activation!r}."
+            f"forge.patch: swiglu kernel only supports activation='silu', "
+            f"got {activation!r}. Route this module to the 'geglu' kernel instead."
         )
+
+    from forge.kernels.swiglu import swiglu
 
     def forward(x):
         gate = module.gate_proj(x)
         up = module.up_proj(x)
-        fused = swiglu(gate, up, preserve_inputs=True)
-        return module.down_proj(fused)
+        return module.down_proj(swiglu(gate, up))
     return forward
 
 

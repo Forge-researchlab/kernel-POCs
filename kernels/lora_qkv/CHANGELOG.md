@@ -6,6 +6,48 @@ Format: each version entry records the algorithmic approach, key results, and wh
 
 ---
 
+## [v4] — 2026-05-24
+
+### Approach
+Packed backward pass: reduces from 18+ cuBLAS calls (v3/Unsloth) to 9 cuBLAS + 1 Triton = 10 ops. Packs compatible matrix operations (dX_base, XA_all, dA_all) into single cuBLAS calls. A Triton epilogue fuses the 3 LoRA dX contributions ([M,r]@[r,K]) into one pass.
+
+### Changes
+- `LoRAQKVv4Function` autograd.Function with packed forward (v2_3) + packed backward
+- `_lora_dx_epilogue_kernel`: Triton kernel computing 3 tiny matmuls + add in one pass
+- `pack_weights_backward(W_q, W_k, W_v)`: pre-pack [W_q; W_k; W_v] for backward dX
+- `pack_lora_a(A_q, A_k, A_v)`: pre-pack [A_q; A_k; A_v] for backward XA
+- `lora_qkv_v4()` convenience wrapper accepting pre-packed weights
+- fp64 fallback for gradcheck (no Triton)
+- Backward operation count: 1 packed dX_base + 1 packed XA + 3 dY@B + 1 packed dA + 3 dB + 1 Triton epilogue
+
+### Results (bf16, LLaMA-3 8B GQA, A100-SXM4-80GB)
+
+Forward (same as v2_3/v3):
+
+| Rank | v4 fwd (ms) | Notes |
+|------|-------------|-------|
+| 8    | ~1.8ms      | Same code path as v2_3 |
+| 16   | ~1.8ms      | Same code path as v2_3 |
+
+Forward + Backward:
+
+| Rank | Unsloth (ms) | v3 (ms) | v4 (ms) | v4/Unsloth | v4/v3 |
+|------|-------------|---------|---------|------------|-------|
+| 8    | 5.905ms     | 4.641ms | 4.323ms | **1.37x**  | 1.07x |
+| 16   | 5.058ms     | 4.696ms | 4.227ms | **1.20x**  | 1.11x |
+| 32   | 5.011ms     | 4.649ms | 4.283ms | **1.17x**  | 1.09x |
+| 64   | 5.071ms     | 4.690ms | 4.438ms | **1.14x**  | 1.06x |
+
+### Key Finding
+**v4 is the fastest training-compatible kernel.** The packed backward eliminates 8 cuBLAS launches (18→10 ops), reducing overhead by 6-11% over v3. Total fwd+bwd speedup vs Unsloth: 1.14x–1.37x. The improvement is largest at small ranks (r=8) where launch overhead dominates compute. The Triton epilogue for dX avoids 3 extra cuBLAS calls + 3 dX read-modify-write round trips.
+
+### Limitations
+- Pre-computing W_dX_packed adds one-time memory (~48 MB at LLaMA-8B scale)
+- dB GEMMs cannot be packed (different N dims: H_q vs H_kv)
+- Memory slightly higher than v3 due to saving packed tensors for backward
+
+---
+
 ## [v3] — 2026-05-24
 
 ### Approach

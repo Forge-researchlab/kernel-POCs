@@ -1,8 +1,17 @@
 # RMSNorm
 
+> **Status (2026-05-24, post-hackathon):** v1 (placeholder, this doc), v2
+> (Liger-style: offset constexpr + 3 casting modes + SM-proportional dW), and
+> v3 (v2 + `@triton.autotune`) all live under `kernels/rmsnorm/`. The shipping
+> kernel is **v3** (re-exported as `forge.kernels.rmsnorm.apply_rmsnorm`).
+> Detailed evolution story + measured numbers + comparative analysis live at
+> `kernels/rmsnorm/docs/{evolution_report.md, comparative_analysis.md}`.
+
 ## Scope
 
-This is a basic Forge RMSNorm placeholder for the patching system. It implements
+This doc describes Forge RMSNorm **v1** — the placeholder baseline kept as
+the no-offset comparison point. v2/v3 supersede it for production use
+(Gemma support, fp64 gradcheck, autotune). It implements
 the Llama/Qwen-style operation:
 
 ```python
@@ -54,11 +63,17 @@ design.
 This Forge version intentionally does not copy those full APIs yet. It gives the
 patching work a stable, minimal kernel surface for Qwen/Llama-style RMSNorm.
 
-## Known Boundaries
+## Known Boundaries (v1 placeholder — closed in v2/v3)
 
-- No Gemma `weight + 1` offset mode yet.
-- No no-affine mode yet.
-- No distributed tensor support yet.
+- ~~No Gemma `weight + 1` offset mode yet.~~ → **Closed in v2** via `OFFSET: tl.constexpr`.
+- No no-affine mode yet. (Still deferred — not used by Qwen3 or Gemma.)
+- No distributed tensor support yet. (Still deferred for FSDP2.)
 - Hidden dimensions requiring a Triton block larger than `131072` are rejected.
-- The current `dw` implementation materializes partial gradients and should be
-  replaced before serious benchmark claims.
+- ~~The current `dw` implementation materializes partial gradients and should be
+  replaced before serious benchmark claims.~~ → **Improved in v2** via
+  SM-proportional partials (`(min(n_rows, sm_count), n_cols)` vs v1's
+  `(ceil(n_rows/16), n_cols)`).
+
+See `kernels/rmsnorm/docs/evolution_report.md` for the v2/v3 design and
+measured perf, and `kernels/rmsnorm/docs/comparative_analysis.md` for the
+Liger/Unsloth/HF/Apex/TE tradeoff table.

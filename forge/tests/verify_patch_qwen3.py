@@ -3,10 +3,9 @@
 Runs the bisection pattern from design_details.html#wiring:
 
     baseline -> patch(kernels=["embedding"]) -> compare
-    baseline -> patch(kernels=["rmsnorm"])   -> compare
-    baseline -> patch(kernels=["swiglu"])    -> compare
-    baseline -> patch(kernels=["rope"])      -> compare    # brittle cos/sin contract
-    baseline -> patch()                       -> compare    # all wired kernels
+    baseline -> patch(kernels=["rope"])      -> compare    # the brittle one
+    baseline -> patch(kernels=["rmsnorm"])   -> compare    # Qwen2RMSNorm path
+    baseline -> patch()                       -> compare
     baseline -> unpatch                       -> must match baseline EXACTLY
 
 Each comparison reports:
@@ -130,18 +129,61 @@ def main():
           f"dtype={out_orig.dtype} NaN={int(out_orig.isnan().sum())}")
 
     results = {}
-    cases = [
-        ("embedding", ["embedding"]),
-        ("rmsnorm", ["rmsnorm"]),
-        ("swiglu", ["swiglu"]),
-        ("rope", ["rope"]),
-    ]
-    for step, (label, kernels) in enumerate(cases, start=2):
-        print(f"\n[{step}/7] {label} only")
-        results[label] = _run_patch_case(model, ids, out_orig, label, kernels)
 
-    # === All wired kernels ===
-    print("\n[6/7] forge.patch(model)  (all wired kernels) ...")
+    # === Embedding only ===
+    print("\n[2/5] forge.patch(model, kernels=['embedding']) ...")
+    try:
+        forge.patch(model, kernels=["embedding"])
+        print(f"  patched_counts = {model._forge_patched_counts}")
+        with torch.no_grad():
+            out_emb = model(ids).logits
+        results["embedding"] = _summary(out_orig, out_emb, "embedding")
+    except Exception as e:
+        print(f"  EXCEPTION: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        results["embedding"] = False
+    finally:
+        if getattr(model, "_forge_patched", False):
+            forge.unpatch(model)
+
+    # === RoPE only (the brittle one — verifies the cos/sin shape contract) ===
+    print("\n[3/6] forge.patch(model, kernels=['rope']) ...")
+    try:
+        forge.patch(model, kernels=["rope"])
+        print(f"  patched_counts = {model._forge_patched_counts}  "
+              f"(module-level RoPE swap active)")
+        # Confirm the swap actually happened
+        import transformers.models.qwen2.modeling_qwen2 as qwen2_mod
+        print(f"  apply_rotary_pos_emb = {qwen2_mod.apply_rotary_pos_emb.__name__}")
+        with torch.no_grad():
+            out_rope = model(ids).logits
+        results["rope"] = _summary(out_orig, out_rope, "rope")
+    except Exception as e:
+        print(f"  EXCEPTION: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        results["rope"] = False
+    finally:
+        if getattr(model, "_forge_patched", False):
+            forge.unpatch(model)
+
+    # === RMSNorm only (Qwen2/3RMSNorm — offset=0.0, casting_mode='llama') ===
+    print("\n[4/6] forge.patch(model, kernels=['rmsnorm']) ...")
+    try:
+        forge.patch(model, kernels=["rmsnorm"])
+        print(f"  patched_counts = {model._forge_patched_counts}")
+        with torch.no_grad():
+            out_rmsnorm = model(ids).logits
+        results["rmsnorm"] = _summary(out_orig, out_rmsnorm, "rmsnorm")
+    except Exception as e:
+        print(f"  EXCEPTION: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        results["rmsnorm"] = False
+    finally:
+        if getattr(model, "_forge_patched", False):
+            forge.unpatch(model)
+
+    # === Both (default: everything that's wired) ===
+    print("\n[5/6] forge.patch(model)  (all wired kernels) ...")
     try:
         forge.patch(model)
         print(f"  patched_counts = {model._forge_patched_counts}")
@@ -157,7 +199,7 @@ def main():
             forge.unpatch(model)
 
     # === Unpatch must restore EXACTLY ===
-    print("\n[7/7] unpatch restoration check ...")
+    print("\n[6/6] unpatch restoration check ...")
     with torch.no_grad():
         out_restored = model(ids).logits
     exact_restore = bool(torch.equal(out_restored, out_orig))

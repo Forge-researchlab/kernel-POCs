@@ -1,0 +1,1426 @@
+{
+  "environment": {
+    "python": "3.11.10",
+    "torch": "2.4.1+cu124",
+    "triton": "3.0.0",
+    "platform": "Linux-6.8.0-110-generic-x86_64-with-glibc2.35",
+    "cuda_available": true,
+    "cuda_device_name": "NVIDIA A100-SXM4-80GB",
+    "cuda_device_capability": [
+      8,
+      0
+    ],
+    "sm_count": 108
+  },
+  "timestamp_utc": "2026-05-24T11:40:53.593470+00:00",
+  "results": {
+    "bench_forward": {
+      "cases": [
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.057394012808799744,
+            "liger": 0.012323528528213501,
+            "unsloth": 0.010767162777483463,
+            "forge_v2": 0.010406851768493652,
+            "forge_v1": 0.010120215825736523
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 4.657271063024021,
+            "unsloth": 5.330467644533378,
+            "forge_v2": 5.515021649732528,
+            "forge_v1": 5.67122419097448
+          },
+          "forge_v2_bandwidth_gbps": 352.82601133190525,
+          "bytes_per_call": 3671808
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.061047594994306564,
+            "liger": 0.010073401965200901,
+            "unsloth": 0.010133287869393826,
+            "forge_v2": 0.009976734407246113
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 6.060275883479951,
+            "unsloth": 6.0244607457261985,
+            "forge_v2": 6.11899570564569
+          },
+          "forge_v2_bandwidth_gbps": 368.0370600357129,
+          "bytes_per_call": 3671808
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.056349609047174454,
+            "liger": 0.010729564353823662,
+            "unsloth": 0.010853567160665989,
+            "forge_v2": 0.01019695121794939,
+            "forge_v1": 0.010812259279191494
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 5.251807733190334,
+            "unsloth": 5.191805441752734,
+            "forge_v2": 5.526123234558964,
+            "forge_v1": 5.2116405639310655
+          },
+          "forge_v2_bandwidth_gbps": 360.08880708741896,
+          "bytes_per_call": 3671808
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.06030689924955368,
+            "liger": 0.010708454996347427,
+            "unsloth": 0.010855162516236305,
+            "forge_v2": 0.011183072812855244
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 5.631708707756992,
+            "unsloth": 5.555596165359232,
+            "forge_v2": 5.392694857555544
+          },
+          "forge_v2_bandwidth_gbps": 328.33623293404276,
+          "bytes_per_call": 3671808
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.2649538516998291,
+            "liger": 0.030266275629401207,
+            "unsloth": 0.03019743598997593,
+            "forge_v2": 0.030599135905504227,
+            "forge_v1": 0.030314629897475243
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 8.754094984929303,
+            "unsloth": 8.774051273352507,
+            "forge_v2": 8.658867116968775,
+            "forge_v1": 8.740131500727832
+          },
+          "forge_v2_bandwidth_gbps": 1096.8487510120406,
+          "bytes_per_call": 33562624
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.27647703886032104,
+            "liger": 0.0298016220331192,
+            "unsloth": 0.0304837878793478,
+            "forge_v2": 0.02986704744398594
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.277248015328361,
+            "unsloth": 9.069641868477543,
+            "forge_v2": 9.256925693068224
+          },
+          "forge_v2_bandwidth_gbps": 1123.7342446703149,
+          "bytes_per_call": 33562624
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.26392823457717896,
+            "liger": 0.02996044233441353,
+            "unsloth": 0.030505672097206116,
+            "forge_v2": 0.030131421983242035,
+            "forge_v1": 0.030439751222729683
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 8.809223563232326,
+            "unsloth": 8.65177576603372,
+            "forge_v2": 8.759235947243576,
+            "forge_v1": 8.670512207737787
+          },
+          "forge_v2_bandwidth_gbps": 1113.8745466000998,
+          "bytes_per_call": 33562624
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.27476492524147034,
+            "liger": 0.030811065807938576,
+            "unsloth": 0.03051641769707203,
+            "forge_v2": 0.0306005347520113
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 8.917735171974357,
+            "unsloth": 9.00383944042794,
+            "forge_v2": 8.979089008351748
+          },
+          "forge_v2_bandwidth_gbps": 1096.7986106123196,
+          "bytes_per_call": 33562624
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.48455965518951416,
+            "liger": 0.049560725688934326,
+            "unsloth": 0.049596093595027924,
+            "forge_v2": 0.04954054579138756,
+            "forge_v1": 0.0489286333322525
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.77708958966483,
+            "unsloth": 9.770117363398393,
+            "forge_v2": 9.781072199526577,
+            "forge_v1": 9.90339648154662
+          },
+          "forge_v2_bandwidth_gbps": 1354.7904030493755,
+          "bytes_per_call": 67117056
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.5045387744903564,
+            "liger": 0.05022865906357765,
+            "unsloth": 0.052857138216495514,
+            "forge_v2": 0.04949870705604553
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 10.044838621945475,
+            "unsloth": 9.54532900407577,
+            "forge_v2": 10.192968756114904
+          },
+          "forge_v2_bandwidth_gbps": 1355.9355383567063,
+          "bytes_per_call": 67117056
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.48202067613601685,
+            "liger": 0.05064328759908676,
+            "unsloth": 0.049042459577322006,
+            "forge_v2": 0.05030232295393944,
+            "forge_v1": 0.049742698669433594
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.517957837806506,
+            "unsloth": 9.828639923249499,
+            "forge_v2": 9.582473488896149,
+            "forge_v1": 9.690279961272264
+          },
+          "forge_v2_bandwidth_gbps": 1334.273489943146,
+          "bytes_per_call": 67117056
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.5049620270729065,
+            "liger": 0.05096958577632904,
+            "unsloth": 0.05016995593905449,
+            "forge_v2": 0.049891937524080276
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.907124403342074,
+            "unsloth": 10.065028314681495,
+            "forge_v2": 10.121114795936462
+          },
+          "forge_v2_bandwidth_gbps": 1345.2485377543424,
+          "bytes_per_call": 67117056
+        },
+        {
+          "shape_label": "gemma2_2b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 2304
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.29230526089668274,
+            "liger": 0.03381830453872681,
+            "unsloth": 0.03300277143716812,
+            "forge_v2": 0.0338318832218647,
+            "forge_v1": 0.03311772271990776
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 8.643403768570105,
+            "unsloth": 8.856991342475105,
+            "forge_v2": 8.639934672858328,
+            "forge_v1": 8.82624881453494
+          },
+          "forge_v2_bandwidth_gbps": 1115.9102126363737,
+          "bytes_per_call": 37753344
+        },
+        {
+          "shape_label": "gemma2_2b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 2304
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.30226561427116394,
+            "liger": 0.0329120010137558,
+            "unsloth": 0.032974861562252045,
+            "forge_v2": 0.03348306939005852
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.18405459895404,
+            "unsloth": 9.166546876945265,
+            "forge_v2": 9.027416535501667
+          },
+          "forge_v2_bandwidth_gbps": 1127.535339134989,
+          "bytes_per_call": 37753344
+        },
+        {
+          "shape_label": "gemma2_2b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 2304
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.290556401014328,
+            "liger": 0.03384232521057129,
+            "unsloth": 0.033212315291166306,
+            "forge_v2": 0.03376764804124832,
+            "forge_v1": 0.03257409855723381
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 8.58559213075487,
+            "unsloth": 8.748453652419986,
+            "forge_v2": 8.604579171738688,
+            "forge_v1": 8.919860069306612
+          },
+          "forge_v2_bandwidth_gbps": 1118.0329750500543,
+          "bytes_per_call": 37753344
+        },
+        {
+          "shape_label": "gemma2_2b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 2304
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.3015176057815552,
+            "liger": 0.03300775960087776,
+            "unsloth": 0.03347865119576454,
+            "forge_v2": 0.03288792446255684
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.134749205260725,
+            "unsloth": 9.006265037932616,
+            "forge_v2": 9.168033882005394
+          },
+          "forge_v2_bandwidth_gbps": 1147.9393916445679,
+          "bytes_per_call": 37753344
+        },
+        {
+          "shape_label": "gemma2_9b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 3584
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.4304291605949402,
+            "liger": 0.044464368373155594,
+            "unsloth": 0.04538065940141678,
+            "forge_v2": 0.04548909515142441,
+            "forge_v1": 0.04520028084516525
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.680316539811741,
+            "unsloth": 9.484859106774069,
+            "forge_v2": 9.462249340465549,
+            "forge_v1": 9.522709871413998
+          },
+          "forge_v2_bandwidth_gbps": 1291.0220307638074,
+          "bytes_per_call": 58727424
+        },
+        {
+          "shape_label": "gemma2_9b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 3584
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.44633549451828003,
+            "liger": 0.04498552903532982,
+            "unsloth": 0.04593639448285103,
+            "forge_v2": 0.04481707885861397
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.921757153678156,
+            "unsloth": 9.716380650747546,
+            "forge_v2": 9.959049225995976
+          },
+          "forge_v2_bandwidth_gbps": 1310.3804508381613,
+          "bytes_per_call": 58727424
+        },
+        {
+          "shape_label": "gemma2_9b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 3584
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.4252680838108063,
+            "liger": 0.045816514641046524,
+            "unsloth": 0.04510682076215744,
+            "forge_v2": 0.04553183913230896,
+            "forge_v1": 0.0450676791369915
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.281982428008899,
+            "unsloth": 9.428021674442343,
+            "forge_v2": 9.340015512552403,
+            "forge_v1": 9.436209983614326
+          },
+          "forge_v2_bandwidth_gbps": 1289.8100564167103,
+          "bytes_per_call": 58727424
+        },
+        {
+          "shape_label": "gemma2_9b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 3584
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.4426543712615967,
+            "liger": 0.04608554393053055,
+            "unsloth": 0.045545950531959534,
+            "forge_v2": 0.04540714621543884
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.605059059926793,
+            "unsloth": 9.71885241369563,
+            "forge_v2": 9.748561804817633
+          },
+          "forge_v2_bandwidth_gbps": 1293.3520138297556,
+          "bytes_per_call": 58727424
+        },
+        {
+          "shape_label": "gemma2_27b",
+          "shape": {
+            "batch": 1,
+            "seq": 2048,
+            "hidden": 4608
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.2955183684825897,
+            "liger": 0.033553481101989746,
+            "unsloth": 0.03431164100766182,
+            "forge_v2": 0.034217145293951035,
+            "forge_v1": 0.03223611041903496
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 8.807383281166176,
+            "unsloth": 8.612772802577418,
+            "forge_v2": 8.636558250077979,
+            "forge_v1": 9.167308482356184
+          },
+          "forge_v2_bandwidth_gbps": 1103.4804825367742,
+          "bytes_per_call": 37757952
+        },
+        {
+          "shape_label": "gemma2_27b",
+          "shape": {
+            "batch": 1,
+            "seq": 2048,
+            "hidden": 4608
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.3052981495857239,
+            "liger": 0.03339194506406784,
+            "unsloth": 0.0341905802488327,
+            "forge_v2": 0.034067414700984955
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.142868107861343,
+            "unsloth": 8.92930588962868,
+            "forge_v2": 8.961588434736644
+          },
+          "forge_v2_bandwidth_gbps": 1108.3304187126457,
+          "bytes_per_call": 37757952
+        },
+        {
+          "shape_label": "gemma2_27b",
+          "shape": {
+            "batch": 1,
+            "seq": 2048,
+            "hidden": 4608
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.29092660546302795,
+            "liger": 0.03408932685852051,
+            "unsloth": 0.03403467684984207,
+            "forge_v2": 0.034594643861055374,
+            "forge_v1": 0.03228149935603142
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 8.534243186157601,
+            "unsloth": 8.547946752853566,
+            "forge_v2": 8.409585213002758,
+            "forge_v1": 9.012177602236179
+          },
+          "forge_v2_bandwidth_gbps": 1091.439245671949,
+          "bytes_per_call": 37757952
+        },
+        {
+          "shape_label": "gemma2_27b",
+          "shape": {
+            "batch": 1,
+            "seq": 2048,
+            "hidden": 4608
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.3051489591598511,
+            "liger": 0.03337373957037926,
+            "unsloth": 0.03430502861738205,
+            "forge_v2": 0.033523399382829666
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 9.143385281003539,
+            "unsloth": 8.895167019485733,
+            "forge_v2": 9.10256611136355
+          },
+          "forge_v2_bandwidth_gbps": 1126.316325167764,
+          "bytes_per_call": 37757952
+        },
+        {
+          "shape_label": "llama3_70b",
+          "shape": {
+            "batch": 1,
+            "seq": 512,
+            "hidden": 8192
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.12636767327785492,
+            "liger": 0.019210685044527054,
+            "unsloth": 0.018450897186994553,
+            "forge_v2": 0.020102940499782562,
+            "forge_v1": 0.018843745812773705
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 6.577988915281077,
+            "unsloth": 6.848863336950761,
+            "forge_v2": 6.286029313931548,
+            "forge_v1": 6.706080337392018
+          },
+          "forge_v2_bandwidth_gbps": 835.3802768396814,
+          "bytes_per_call": 16793600
+        },
+        {
+          "shape_label": "llama3_70b",
+          "shape": {
+            "batch": 1,
+            "seq": 512,
+            "hidden": 8192
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.1366923749446869,
+            "liger": 0.020207397639751434,
+            "unsloth": 0.019446464255452156,
+            "forge_v2": 0.019891854375600815
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 6.76447197118492,
+            "unsloth": 7.0291634072431854,
+            "forge_v2": 6.871776374572329
+          },
+          "forge_v2_bandwidth_gbps": 844.245070514838,
+          "bytes_per_call": 16793600
+        },
+        {
+          "shape_label": "llama3_70b",
+          "shape": {
+            "batch": 1,
+            "seq": 512,
+            "hidden": 8192
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.12477855384349823,
+            "liger": 0.020354991778731346,
+            "unsloth": 0.019073529168963432,
+            "forge_v2": 0.019649934023618698,
+            "forge_v1": 0.01939525082707405
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 6.130120571892229,
+            "unsloth": 6.541975149860503,
+            "forge_v2": 6.350074951575803,
+            "forge_v1": 6.433459147087618
+          },
+          "forge_v2_bandwidth_gbps": 854.6390018314839,
+          "bytes_per_call": 16793600
+        },
+        {
+          "shape_label": "llama3_70b",
+          "shape": {
+            "batch": 1,
+            "seq": 512,
+            "hidden": 8192
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.13666632771492004,
+            "liger": 0.019932765513658524,
+            "unsloth": 0.019495010375976562,
+            "forge_v2": 0.020087601616978645
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 6.856365596699174,
+            "unsloth": 7.010323415027884,
+            "forge_v2": 6.803516433709316
+          },
+          "forge_v2_bandwidth_gbps": 836.0181728119071,
+          "bytes_per_call": 16793600
+        }
+      ]
+    },
+    "bench_forward_backward": {
+      "cases": [
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.44461360573768616,
+            "liger": 0.3924578130245209,
+            "unsloth": 0.17848463356494904,
+            "forge_v2": 0.28542888164520264,
+            "forge_v1": 0.2641156315803528
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.1328952844924165,
+            "unsloth": 2.4910469705835774,
+            "forge_v2": 1.55770363242482,
+            "forge_v1": 1.6834051172106406
+          }
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.45399922132492065,
+            "liger": 0.3102641701698303,
+            "unsloth": 0.27231717109680176,
+            "forge_v2": 0.32114964723587036
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.4632666771558367,
+            "unsloth": 1.6671707461426866,
+            "forge_v2": 1.4136687529707237
+          }
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.44831404089927673,
+            "liger": 0.39154288172721863,
+            "unsloth": 0.2139674723148346,
+            "forge_v2": 0.432235449552536,
+            "forge_v1": 0.2732079327106476
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.1449934651387932,
+            "unsloth": 2.095243898753085,
+            "forge_v2": 1.037198687343636,
+            "forge_v1": 1.6409261490005222
+          }
+        },
+        {
+          "shape_label": "qwen25_0p5b",
+          "shape": {
+            "batch": 2,
+            "seq": 512,
+            "hidden": 896
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.6742286682128906,
+            "liger": 0.4365696609020233,
+            "unsloth": 0.21273748576641083,
+            "forge_v2": 0.3127809166908264
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.5443782025984707,
+            "unsloth": 3.1692988463406233,
+            "forge_v2": 2.155594002812337
+          }
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.9554538130760193,
+            "liger": 0.32334694266319275,
+            "unsloth": 0.2242002785205841,
+            "forge_v2": 0.270568311214447,
+            "forge_v1": 0.24060748517513275
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 2.9548874197064756,
+            "unsloth": 4.261608501919403,
+            "forge_v2": 3.5312849785973115,
+            "forge_v1": 3.9710061903542444
+          }
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.0199241638183594,
+            "liger": 0.33209097385406494,
+            "unsloth": 0.21576498448848724,
+            "forge_v2": 0.25455236434936523
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 3.071219166187148,
+            "unsloth": 4.72701428471486,
+            "forge_v2": 4.00673616379593
+          }
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.9009539484977722,
+            "liger": 0.33871757984161377,
+            "unsloth": 0.2958433926105499,
+            "forge_v2": 0.5278623104095459,
+            "forge_v1": 0.2384767234325409
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 2.659897218559082,
+            "unsloth": 3.045374583314739,
+            "forge_v2": 1.706797266504518,
+            "forge_v1": 3.777953401614181
+          }
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "seq": 512,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.9666033983230591,
+            "liger": 0.43462905287742615,
+            "unsloth": 0.28808656334877014,
+            "forge_v2": 0.36930525302886963
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 2.223973275425884,
+            "unsloth": 3.355253320693221,
+            "forge_v2": 2.617356212497462
+          }
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 1.616558313369751,
+            "liger": 0.3101936876773834,
+            "unsloth": 0.1688113510608673,
+            "forge_v2": 0.28133586049079895,
+            "forge_v1": 0.3590531647205353
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 5.2114481293089705,
+            "unsloth": 9.576123306938513,
+            "forge_v2": 5.746008740405919,
+            "forge_v1": 4.502281200133634
+          }
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.7236889600753784,
+            "liger": 0.4497849643230438,
+            "unsloth": 0.32518547773361206,
+            "forge_v2": 0.3155039846897125
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 3.8322511795600915,
+            "unsloth": 5.300633263479876,
+            "forge_v2": 5.463287450301358
+          }
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 1.6128515005111694,
+            "liger": 0.4883948266506195,
+            "unsloth": 0.21113601326942444,
+            "forge_v2": 0.407064825296402,
+            "forge_v1": 0.3754158318042755
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 3.3023517295873135,
+            "unsloth": 7.638921828333745,
+            "forge_v2": 3.962149024634542,
+            "forge_v1": 4.296173373295657
+          }
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 4096
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.7187188863754272,
+            "liger": 0.5583987236022949,
+            "unsloth": 0.28236299753189087,
+            "forge_v2": 0.36171773076057434
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 3.077942004035705,
+            "unsloth": 6.086912596192106,
+            "forge_v2": 4.751547243098983
+          }
+        },
+        {
+          "shape_label": "gemma2_2b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 2304
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.9744355082511902,
+            "liger": 0.5822771787643433,
+            "unsloth": 0.45472925901412964,
+            "forge_v2": 0.6033604741096497,
+            "forge_v1": 0.32755744457244873
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.6734908112302296,
+            "unsloth": 2.142891597439328,
+            "forge_v2": 1.6150138268323233,
+            "forge_v1": 2.974853798615668
+          }
+        },
+        {
+          "shape_label": "gemma2_2b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 2304
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.0403980016708374,
+            "liger": 0.633161723613739,
+            "unsloth": 0.5172028541564941,
+            "forge_v2": 0.40699857473373413
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.6431789270722457,
+            "unsloth": 2.0115859634371547,
+            "forge_v2": 2.5562693981213194
+          }
+        },
+        {
+          "shape_label": "gemma2_2b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 2304
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.9706268310546875,
+            "liger": 0.41311562061309814,
+            "unsloth": 0.4317750036716461,
+            "forge_v2": 0.2773357331752777,
+            "forge_v1": 0.25744161009788513
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 2.3495282739834336,
+            "unsloth": 2.247992178335605,
+            "forge_v2": 3.4998260770141942,
+            "forge_v1": 3.7702795235223756
+          }
+        },
+        {
+          "shape_label": "gemma2_2b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 2304
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.0342758893966675,
+            "liger": 0.36228230595588684,
+            "unsloth": 0.2670571804046631,
+            "forge_v2": 0.4665261507034302
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 2.854889329104043,
+            "unsloth": 3.872863061871105,
+            "forge_v2": 2.2169730203487665
+          }
+        },
+        {
+          "shape_label": "gemma2_9b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 3584
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 1.4312914609909058,
+            "liger": 0.3849872350692749,
+            "unsloth": 0.3216467499732971,
+            "forge_v2": 0.4271967113018036,
+            "forge_v1": 0.38752299547195435
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 3.7177634233336545,
+            "unsloth": 4.44988628397374,
+            "forge_v2": 3.350427152468725,
+            "forge_v1": 3.693436203051054
+          }
+        },
+        {
+          "shape_label": "gemma2_9b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 3584
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.525748372077942,
+            "liger": 0.31080561876296997,
+            "unsloth": 0.36116188764572144,
+            "forge_v2": 0.5103185772895813
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 4.909011549245913,
+            "unsloth": 4.224555315135055,
+            "forge_v2": 2.989795864735202
+          }
+        },
+        {
+          "shape_label": "gemma2_9b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 3584
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 1.424436092376709,
+            "liger": 0.4127558469772339,
+            "unsloth": 0.20795106887817383,
+            "forge_v2": 0.2901657819747925,
+            "forge_v1": 0.2854863405227661
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 3.451037950905819,
+            "unsloth": 6.849861845197831,
+            "forge_v2": 4.909042281561834,
+            "forge_v1": 4.98950699276317
+          }
+        },
+        {
+          "shape_label": "gemma2_9b",
+          "shape": {
+            "batch": 2,
+            "seq": 2048,
+            "hidden": 3584
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.5213196277618408,
+            "liger": 0.3296637535095215,
+            "unsloth": 0.22351524233818054,
+            "forge_v2": 0.28457963466644287
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 4.614761591367676,
+            "unsloth": 6.806335048327804,
+            "forge_v2": 5.345848551478347
+          }
+        },
+        {
+          "shape_label": "gemma2_27b",
+          "shape": {
+            "batch": 1,
+            "seq": 2048,
+            "hidden": 4608
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.9806798100471497,
+            "liger": 0.3017140328884125,
+            "unsloth": 0.2629440128803253,
+            "forge_v2": 0.5978847742080688,
+            "forge_v1": 0.6256552338600159
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 3.250361942594329,
+            "unsloth": 3.7296145263192972,
+            "forge_v2": 1.6402488445137506,
+            "forge_v1": 1.5674444278149633
+          }
+        },
+        {
+          "shape_label": "gemma2_27b",
+          "shape": {
+            "batch": 1,
+            "seq": 2048,
+            "hidden": 4608
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.0412777662277222,
+            "liger": 0.5407018065452576,
+            "unsloth": 0.4882422387599945,
+            "forge_v2": 0.44846856594085693
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.925789323473558,
+            "unsloth": 2.132707257922401,
+            "forge_v2": 2.321852288673101
+          }
+        },
+        {
+          "shape_label": "gemma2_27b",
+          "shape": {
+            "batch": 1,
+            "seq": 2048,
+            "hidden": 4608
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 1.0554747581481934,
+            "liger": 0.5288426876068115,
+            "unsloth": 0.24319402873516083,
+            "forge_v2": 0.3878164291381836,
+            "forge_v1": 0.30504992604255676
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.9958198966966274,
+            "unsloth": 4.340052112453835,
+            "forge_v2": 2.721583406081322,
+            "forge_v1": 3.4600066023321925
+          }
+        },
+        {
+          "shape_label": "gemma2_27b",
+          "shape": {
+            "batch": 1,
+            "seq": 2048,
+            "hidden": 4608
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 1.1199826002120972,
+            "liger": 0.4915742576122284,
+            "unsloth": 0.2420845925807953,
+            "forge_v2": 0.39237892627716064
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 2.2783589312676744,
+            "unsloth": 4.626410083650016,
+            "forge_v2": 2.8543393266257797
+          }
+        },
+        {
+          "shape_label": "llama3_70b",
+          "shape": {
+            "batch": 1,
+            "seq": 512,
+            "hidden": 8192
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.4451867640018463,
+            "liger": 0.27679356932640076,
+            "unsloth": 0.28057339787483215,
+            "forge_v2": 0.4327241778373718,
+            "forge_v1": 0.5316787362098694
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.6083710509794134,
+            "unsloth": 1.5867033987322297,
+            "forge_v2": 1.02880030005894,
+            "forge_v1": 0.8373228675184743
+          }
+        },
+        {
+          "shape_label": "llama3_70b",
+          "shape": {
+            "batch": 1,
+            "seq": 512,
+            "hidden": 8192
+          },
+          "dtype": "torch.bfloat16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.66702800989151,
+            "liger": 0.5796207785606384,
+            "unsloth": 0.4839765429496765,
+            "forge_v2": 0.6936985850334167
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.1508007210299265,
+            "unsloth": 1.3782238408212835,
+            "forge_v2": 0.9615530783580567
+          }
+        },
+        {
+          "shape_label": "llama3_70b",
+          "shape": {
+            "batch": 1,
+            "seq": 512,
+            "hidden": 8192
+          },
+          "dtype": "torch.float16",
+          "offset": 0.0,
+          "casting_mode": "llama",
+          "median_ms": {
+            "pytorch_eager": 0.9180846214294434,
+            "liger": 0.6194621324539185,
+            "unsloth": 0.3581245541572571,
+            "forge_v2": 0.5716909766197205,
+            "forge_v1": 0.5576285123825073
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.4820673828641806,
+            "unsloth": 2.5635902670507775,
+            "forge_v2": 1.6059106387473006,
+            "forge_v1": 1.646409035841553
+          }
+        },
+        {
+          "shape_label": "llama3_70b",
+          "shape": {
+            "batch": 1,
+            "seq": 512,
+            "hidden": 8192
+          },
+          "dtype": "torch.float16",
+          "offset": 1.0,
+          "casting_mode": "gemma",
+          "median_ms": {
+            "pytorch_eager": 0.9324784874916077,
+            "liger": 0.6062867045402527,
+            "unsloth": 0.5144500732421875,
+            "forge_v2": 0.7389070987701416
+          },
+          "speedup_vs_pytorch": {
+            "pytorch_eager": 1.0,
+            "liger": 1.5380157283816842,
+            "unsloth": 1.8125733399451283,
+            "forge_v2": 1.2619698593282591
+          }
+        }
+      ]
+    }
+  }
+}
