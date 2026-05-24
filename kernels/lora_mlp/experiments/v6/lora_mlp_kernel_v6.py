@@ -342,18 +342,17 @@ def _v6_forward_impl(
         # that allocated/touches X (so reading X on `side` is safe).
         side.wait_stream(default_stream)
 
-        # Phase 1a (default): e_base = X @ W_gate.T
-        e_base = torch.matmul(X_flat, W_gate.t())
-        # Phase 1b (side): g_base = X @ W_up.T  (overlaps with 1a)
-        with torch.cuda.stream(side):
-            g_base = torch.matmul(X_flat, W_up.t())
-        # Phase 1c (default): stacked LoRA-A on default stream
+        # Phase 1a (default): e_base = X @ W_gate.T  (big, ~80% SMs)
+        # Phase 1b (side):    LoRA-A stacked         (tiny, ~5% SMs, overlaps gate)
         if has_lora:
-            xa_gate, xa_up = fused_lora_a_stacked(X_flat, A_stack, r)
+            with torch.cuda.stream(side):
+                xa_gate, xa_up = fused_lora_a_stacked(X_flat, A_stack, r)
         else:
             xa_gate = xa_up = None
-        # Default must wait for `side` (g_base) before the Triton SwiGLU epilogue
-        # reads g_base.
+        e_base = torch.matmul(X_flat, W_gate.t())
+        # Phase 1c (default): g_base = X @ W_up.T  (sequential — both big GEMMs saturate SMs)
+        g_base = torch.matmul(X_flat, W_up.t())
+        # LoRA-A finished long ago (~50 us vs gate's ~1.5 ms), sync is instant
         default_stream.wait_stream(side)
     else:
         e_base = torch.matmul(X_flat, W_gate.t())
