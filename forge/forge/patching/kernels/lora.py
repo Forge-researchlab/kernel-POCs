@@ -76,6 +76,23 @@ def _lora_tensors(linear, *, allow_bias: bool = False):
     )
 
 
+def _check_lora_active(linear):
+    """Same skip-patch policy as `_lora_tensors`, but without extracting any
+    weight references. Used by the FSDP2-safe LoRA-QKV path which routes
+    matmuls through PEFT submodule calls (so FSDP2's all-gather hooks fire)
+    instead of closing over raw weight tensors at patch time.
+    """
+    adapter = _active_lora_adapter(linear)
+    if adapter is None:
+        raise ForgeSkipPatch("no active PEFT LoRA adapter")
+    if getattr(linear, "disable_adapters", False) or getattr(linear, "merged", False):
+        raise ForgeSkipPatch("LoRA adapter is disabled or merged")
+    dropouts = getattr(linear, "lora_dropout", {})
+    dropout = dropouts.get(adapter) if hasattr(dropouts, "get") else None
+    if not _is_identity_dropout(dropout):
+        raise ForgeSkipPatch("LoRA dropout must be 0.0 for exact fused patching")
+
+
 _QWEN_MLP_ACTIVATIONS = {"silu", None}  # None → silu by default in HF Qwen MLP
 _GEMMA_TANH_ACTIVATIONS = {"gelu_pytorch_tanh", "gelu_new"}
 _GEMMA_EXACT_ACTIVATIONS = {"gelu", "gelu_python"}
@@ -128,29 +145,23 @@ def make_lora_mlp_forward(module, config):
     activation = _detect_mlp_activation(module)
 
     if activation == "silu":
-        from forge.kernels.lora_mlp import LoRAMLPv3
+        # FSDP2-safe path (see context/phase3_fsdp2_resume.md §7). Going
+        # through PEFT submodules (gate/up/down_proj) lets FSDP2's all-gather
+        # hooks fire on each weight access. The earlier LoRAMLPv3-fused path
+        # closed over raw `module.*.base_layer.weight` refs which break under
+        # DTensor dispatch (mixed-Tensor/DTensor RuntimeError on aten.mm).
+        # Trade-off: lost the fused SwiGLU+LoRA win; activation alone stays
+        # fused via the swiglu kernel. Symmetric with the GeGLU branch below.
+        from forge.kernels.swiglu import swiglu
 
-        W_gate, A_gate, B_gate, s_gate, _ = _lora_tensors(module.gate_proj)
-        W_up, A_up, B_up, s_up, _ = _lora_tensors(module.up_proj)
-        W_down, A_down, B_down, s_down, _ = _lora_tensors(module.down_proj)
+        _check_lora_active(module.gate_proj)
+        _check_lora_active(module.up_proj)
+        _check_lora_active(module.down_proj)
 
         def forward(x):
-            dtype = x.dtype
-            return LoRAMLPv3.apply(
-                x,
-                W_gate,
-                A_gate.to(dtype),
-                B_gate.to(dtype),
-                s_gate,
-                W_up,
-                A_up.to(dtype),
-                B_up.to(dtype),
-                s_up,
-                W_down,
-                A_down.to(dtype),
-                B_down.to(dtype),
-                s_down,
-            )
+            gate = module.gate_proj(x)
+            up = module.up_proj(x)
+            return module.down_proj(swiglu(gate, up))
         return forward
 
     # GeGLU path (Gemma 2) — no fused LoRA-MLP-GeGLU kernel yet, so we lean on
@@ -178,29 +189,38 @@ def make_lora_mlp_forward(module, config):
 
 
 def make_lora_qkv_forward(module, config):
-    """PEFT LoRA attention Q/K/V projections -> Forge LoRA-QKV v3.
+    """PEFT LoRA attention Q/K/V projections — FSDP2-safe variant.
+
+    Routes Q/K/V through PEFT's wrapped Linear submodules (`module.q_proj(x)`
+    etc.) instead of closing over raw weight tensors at patch time. This is
+    the locked Phase 3 design (see `context/phase3_fsdp2_resume.md` §7): when
+    FSDP2 shards a Linear's weight, all-gather is triggered by the submodule
+    `forward` hook chain. Bypassing it with a raw tensor pointer captured at
+    patch time leaves the closure pointing at a stale shard, which crashes
+    with `mixed torch.Tensor and DTensor` under `aten.mm.default`.
+
+    Trade-off: this path is unfused (three independent LoRA matmuls instead
+    of one packed-QKV matmul). The v4 fused-QKV win is recovered later when
+    FSDP2 can be taught to honor raw tensor closures, or via DTensor-aware
+    rewrites of the v4 packer. For now correctness > speed.
 
     Works for both Qwen (2/3) and Gemma 2 attention blocks. Architecture
     differences handled at call time, not closure-build time:
       * Gemma 2 sets `self.sliding_window` per-layer (None on full-attn layers).
-        The existing `getattr(module, "sliding_window", None)` path picks this
-        up; the subsequent Qwen-specific config lookup is a no-op for Gemma 2
-        because `use_sliding_window` is absent.
+        The `getattr(module, "sliding_window", None)` path picks this up; the
+        Qwen-specific config lookup is a no-op for Gemma 2 because
+        `use_sliding_window` is absent.
       * Gemma 2 has `attn_logit_softcapping` (numeric or None) that must be
         forwarded to the attention interface as `softcap=`. Qwen 3 has no
         such attribute, so we only pass softcap when present.
       * Gemma 2's HF forward takes `past_key_values` (plural); older Qwen
-        signatures used `past_key_value` (singular). We accept both names —
-        in PEFT-wrapped models the kwargs flow through whichever name the
-        outer block passes.
+        signatures used `past_key_value` (singular). We accept both names.
       * Gemma 2 has no q_norm/k_norm (Qwen 3 specific). The hasattr-guards
         already in place make this safe.
     """
-    from forge.kernels.lora_qkv import lora_qkv_v3
-
-    W_q, A_q, B_q, s_q, bias_q = _lora_tensors(module.q_proj, allow_bias=True)
-    W_k, A_k, B_k, s_k, bias_k = _lora_tensors(module.k_proj, allow_bias=True)
-    W_v, A_v, B_v, s_v, bias_v = _lora_tensors(module.v_proj, allow_bias=True)
+    _check_lora_active(module.q_proj)
+    _check_lora_active(module.k_proj)
+    _check_lora_active(module.v_proj)
     modeling = importlib.import_module(module.__class__.__module__)
 
     def forward(
@@ -219,30 +239,13 @@ def make_lora_qkv_forward(module, config):
 
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, module.head_dim)
-        dtype = hidden_states.dtype
 
-        query_states, key_states, value_states = lora_qkv_v3(
-            hidden_states,
-            W_q,
-            A_q.to(dtype),
-            B_q.to(dtype),
-            s_q,
-            W_k,
-            A_k.to(dtype),
-            B_k.to(dtype),
-            s_k,
-            W_v,
-            A_v.to(dtype),
-            B_v.to(dtype),
-            s_v,
-            W_all=None,
-        )
-        if bias_q is not None:
-            query_states = query_states + bias_q.to(dtype)
-        if bias_k is not None:
-            key_states = key_states + bias_k.to(dtype)
-        if bias_v is not None:
-            value_states = value_states + bias_v.to(dtype)
+        # PEFT submodule calls — FSDP2 sees these and triggers all-gather. The
+        # PEFT Linear wrapper applies base + lora_B(lora_A(x)) * scaling + bias
+        # in one go, so we don't separately add bias here.
+        query_states = module.q_proj(hidden_states)
+        key_states = module.k_proj(hidden_states)
+        value_states = module.v_proj(hidden_states)
 
         query_states = query_states.view(hidden_shape)
         key_states = key_states.view(hidden_shape)
