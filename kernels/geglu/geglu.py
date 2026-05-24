@@ -98,8 +98,6 @@ def _gelu_activation(gate_fp32, APPROXIMATE_TANH: tl.constexpr):
         inv_sqrt_2 = 0.7071067811865476
         activated = 0.5 * gate_fp32 * (1.0 + tl.math.erf(gate_fp32 * inv_sqrt_2))
 
-    activated = tl.where(gate_fp32 == -float("inf"), 0.0, activated)
-    activated = tl.where(gate_fp32 == float("inf"), gate_fp32, activated)
     return activated
 
 
@@ -122,10 +120,6 @@ def _gelu_activation_and_grad(gate_fp32, APPROXIMATE_TANH: tl.constexpr):
         activated = gate_fp32 * cdf
         grad = cdf + inv_sqrt_2pi * gate_fp32 * tl.exp(-0.5 * gate_fp32 * gate_fp32)
 
-    activated = tl.where(gate_fp32 == -float("inf"), 0.0, activated)
-    activated = tl.where(gate_fp32 == float("inf"), gate_fp32, activated)
-    grad = tl.where(gate_fp32 == -float("inf"), 0.0, grad)
-    grad = tl.where(gate_fp32 == float("inf"), 1.0, grad)
     return activated, grad
 
 
