@@ -14,10 +14,6 @@ LIGER_SRC = WORKSPACE / "Liger-Kernel" / "src"
 if LIGER_SRC.exists():
     sys.path.insert(0, str(LIGER_SRC))
 
-UNSLOTH_SRC = WORKSPACE / "unsloth"
-if UNSLOTH_SRC.exists():
-    sys.path.insert(0, str(UNSLOTH_SRC))
-
 from kernels.geglu import geglu
 from kernels.geglu import geglu_backward
 from kernels.geglu import geglu_forward
@@ -56,17 +52,6 @@ except Exception as exc:
     LIGER_IMPORT_ERROR = repr(exc)
 else:
     LIGER_IMPORT_ERROR = None
-
-
-try:
-    from unsloth.kernels.geglu import geglu_approx_forward_kernel
-    from unsloth.kernels.geglu import geglu_exact_forward_kernel
-except Exception as exc:
-    geglu_approx_forward_kernel = None
-    geglu_exact_forward_kernel = None
-    UNSLOTH_IMPORT_ERROR = repr(exc)
-else:
-    UNSLOTH_IMPORT_ERROR = None
 
 
 DTYPES = {
@@ -168,14 +153,6 @@ def _separate_provider(provider, gate, up, approximate):
         if LigerGELUMulFunction is None:
             raise RuntimeError("Liger is not importable")
         return LigerGELUMulFunction.apply(gate, up)
-    if provider == "unsloth":
-        if approximate == "tanh":
-            if geglu_approx_forward_kernel is None:
-                raise RuntimeError("Unsloth is not importable")
-            return geglu_approx_forward_kernel(gate, up)
-        if geglu_exact_forward_kernel is None:
-            raise RuntimeError("Unsloth is not importable")
-        return geglu_exact_forward_kernel(gate, up)
     raise ValueError(f"unknown separate provider: {provider}")
 
 
@@ -199,9 +176,6 @@ def _bench_forward(provider, layout, shape, dtype, approximate, warmup, rep):
 
 
 def _bench_full(provider, layout, shape, dtype, approximate, warmup, rep):
-    if provider == "unsloth":
-        return None, None
-
     base_gate, base_up, base_gate_up, grad = _make_inputs(shape, dtype)
     state = {}
 
@@ -263,7 +237,7 @@ def _bench_backward(provider, layout, shape, dtype, approximate, warmup, rep):
 
 
 def _provider_layout(provider):
-    if provider in {"torch", "forge_fast", "forge_safe", "liger", "unsloth"}:
+    if provider in {"torch", "forge_fast", "forge_safe", "liger"}:
         return "separate"
     if provider in {"torch_packed", "forge_packed_fast", "forge_packed_safe"}:
         return "packed"
@@ -276,12 +250,11 @@ def run(args):
     rows = []
     providers = args.providers
 
+    if "unsloth" in providers:
+        raise RuntimeError("Use benchmark_geglu_unsloth_only.py for Unsloth so import-time patching is isolated")
     if "liger" in providers and LigerGELUMulFunction is None:
         print(f"warning: skipping liger provider because liger_kernel is not importable: {LIGER_IMPORT_ERROR}")
         providers = [p for p in providers if p != "liger"]
-    if "unsloth" in providers and (geglu_approx_forward_kernel is None or geglu_exact_forward_kernel is None):
-        print(f"warning: skipping unsloth provider because unsloth is not importable: {UNSLOTH_IMPORT_ERROR}")
-        providers = [p for p in providers if p != "unsloth"]
 
     for approximate in args.approximate:
         active_providers = providers
