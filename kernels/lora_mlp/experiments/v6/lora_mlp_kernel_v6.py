@@ -1,27 +1,27 @@
 """
-v6 — cuBLAS for big GEMMs + Triton-stacked LoRA-A + Optional CUDA-Stream Parallelism
+v6 — cuBLAS for big GEMMs + Stacked Gate-LoRA cuBLAS + Optional CUDA-Stream Parallelism
 
 Strategy (use where each framework shines):
   * cuBLAS for every "big" matmul (gate, up, down) — these are tile-aligned to
     cuBLAS's preferred N=I=14336 (or H=4096) tiles and run at >80% of peak.
-  * One Triton kernel for the two TINY LoRA-A matmuls (X @ A_gate.T and
-    X @ A_up.T). We stack the two A matrices into [2r, H] so a single
-    standard Triton matmul produces [M, 2r] — the compiler caches each X tile
-    in shared memory and reuses it across the 2r output columns. This gives
-    the "load X once" benefit of fusion WITHOUT writing a fancy multi-output
-    kernel.
+  * Gate + LoRA-A stacking: W_gate [I, H], A_gate [r, H] and A_up [r, H] are
+    stacked into a single [I+2r, H] matrix. One cuBLAS call computes e_base,
+    xa_gate, and xa_up simultaneously via ``X @ W_gate_stack.T → [M, I+2r]``
+    followed by column slicing. This eliminates the Triton LoRA-A kernel,
+    reducing total launches from 7 to 6 and removing the only remaining Triton
+    GEMM. (Legacy Triton LoRA-A path is kept as fallback.)
   * Optional CUDA stream parallelism (``enable_streams=True``, default) overlaps
-    the two big gate/up GEMMs on separate streams, and overlaps the down GEMM
-    with the tiny ``h @ A_down.T`` LoRA-A matmul. Sync points are event-based.
+    the down GEMM with the tiny ``h @ A_down.T`` LoRA-A matmul.
 
-Pipeline (training, has_lora=True):
-  Phase 1 (cuBLAS, optional streams):
-    stream A:  e_base = X @ W_gate.T      [M, I]
-    stream B:  g_base = X @ W_up.T        [M, I]
-  Phase 2 (Triton, single launch, stacked):
-    X @ [A_gate; A_up].T  →  xa_combined  [M, 2r]
-    xa_gate = xa_combined[:, :r];  xa_up = xa_combined[:, r:]
-  Phase 3 (Triton, existing fused_lora_swiglu epilogue):
+Pipeline (training, has_lora=True, W_gate_stack provided):
+  Phase 1 (cuBLAS, single call):
+    X @ [W_gate; A_gate; A_up].T  →  gate_result  [M, I+2r]
+    e_base = gate_result[:, :I]     (view)
+    xa_gate = gate_result[:, I:I+r] (view)
+    xa_up   = gate_result[:, I+r:]  (view)
+  Phase 2 (cuBLAS):
+    g_base = X @ W_up.T             [M, I]
+  Phase 3 (Triton, fused_lora_swiglu epilogue):
     h, e_full, g_full = fused_lora_swiglu(e_base, g_base, xa_gate, xa_up, ...)
   Phase 4 (cuBLAS + cuBLAS, optional streams):
     stream A:  out = h @ W_down.T         [M, H]      (cuBLAS, big)
@@ -30,13 +30,11 @@ Pipeline (training, has_lora=True):
     out.addmm_(xa_down, B_down.T, alpha=s_down)        (cuBLAS, in-place)
 
 Launch counts (training, has_lora=True):
-  enable_streams=False: 6 launches  (W_gate, W_up, stacked-LoRA-A, swiglu, W_down,
-                                     A_down, addmm_) — actually 7, with addmm_.
-  enable_streams=True:  same kernel count, but Phase-1 gate/up overlap on
-                        separate streams, and Phase-4 W_down/A_down overlap.
+  6 launches: stacked gate+loraA, W_up, swiglu, W_down, A_down, addmm_.
+  With enable_streams=True, Phase-4 W_down/A_down overlap on separate streams.
 
-Memory: no transient packed weights (gate/up/down weights are used as-is);
-        no mega-matmul output. Footprint ties v3.
+Memory: no transient packed weights beyond the stacked gate matrix (pre-computed
+        and cached on LoRAMLPv6Module). Footprint ties v3.
 
 Inference path is shared with v5: ``lora_mlp_v6_inference = lora_mlp_v5_inference``.
 Pre-merged effective weights sidestep all LoRA-A pain points.
@@ -99,8 +97,8 @@ def fused_lora_swiglu_inplace(
     Requires e_base and g_base to be contiguous (true in v6 where they come
     from separate ``torch.matmul`` calls).
     """
-    assert e_base.is_contiguous(), "e_base must be contiguous for in-place write"
-    assert g_base.is_contiguous(), "g_base must be contiguous for in-place write"
+    assert e_base.stride(-1) == 1, "e_base must be inner-contiguous for in-place write"
+    assert g_base.stride(-1) == 1, "g_base must be inner-contiguous for in-place write"
 
     M, N = e_base.shape
     has_lora = xa_gate is not None
@@ -258,6 +256,17 @@ def stack_lora_a(A_gate: torch.Tensor, A_up: torch.Tensor) -> torch.Tensor:
     return torch.cat([A_gate, A_up], dim=0).contiguous()
 
 
+def stack_gate_lora_a(
+    W_gate: torch.Tensor, A_gate: torch.Tensor, A_up: torch.Tensor,
+) -> torch.Tensor:
+    """Stack [W_gate; A_gate; A_up] → shape [(I + 2r), H] for fused cuBLAS.
+
+    A single ``X @ W_gate_stack.T`` replaces the separate gate cuBLAS +
+    Triton LoRA-A kernel, eliminating one kernel launch.
+    """
+    return torch.cat([W_gate, A_gate, A_up], dim=0).contiguous()
+
+
 def fused_lora_a_stacked(
     X: torch.Tensor,
     A_stack: torch.Tensor,
@@ -325,34 +334,49 @@ def _v6_forward_impl(
     save_eg: bool,
     enable_streams: bool,
     side_stream: Optional[torch.cuda.Stream] = None,
+    W_gate_stack: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     """Shared v6 forward used by both training (save_eg=True) and inference.
 
     Returns (out, e_full, g_full). ``e_full/g_full`` are None unless
     ``save_eg=True``.
+
+    When ``W_gate_stack`` is provided (shape ``[I+2r, H]``), Phase 1 uses a
+    single cuBLAS call instead of separate gate + Triton LoRA-A kernels,
+    reducing the total launch count from 7 to 6.
     """
     orig_shape = X.shape
     X_flat = X.view(-1, X.shape[-1]) if X.dim() == 3 else X
-    has_lora = A_stack is not None and B_gate is not None and r > 0
+    has_lora = B_gate is not None and r > 0 and (
+        A_stack is not None or W_gate_stack is not None
+    )
+    use_stacked_gate = has_lora and W_gate_stack is not None
 
-    if enable_streams and X_flat.is_cuda:
+    # ------------------------------------------------------------------
+    # Phase 1 + 2: gate projection (+ LoRA-A) and up projection
+    # ------------------------------------------------------------------
+    if use_stacked_gate:
+        # Stacked cuBLAS: X @ [W_gate; A_gate; A_up].T → [M, I+2r]
+        # Eliminates the Triton LoRA-A kernel entirely.
+        I = W_gate.shape[0]
+        gate_result = torch.matmul(X_flat, W_gate_stack.t())
+        e_base = gate_result[:, :I]
+        xa_gate = gate_result[:, I:I + r]
+        xa_up = gate_result[:, I + r:]
+        g_base = torch.matmul(X_flat, W_up.t())
+    elif enable_streams and X_flat.is_cuda:
+        # Legacy path: separate gate cuBLAS + Triton LoRA-A on side stream
         default_stream = torch.cuda.current_stream()
         side = side_stream if side_stream is not None else _get_v6_side_stream()
-        # Make the side stream wait for any in-flight work on the default stream
-        # that allocated/touches X (so reading X on `side` is safe).
         side.wait_stream(default_stream)
 
-        # Phase 1a (default): e_base = X @ W_gate.T  (big, ~80% SMs)
-        # Phase 1b (side):    LoRA-A stacked         (tiny, ~5% SMs, overlaps gate)
         if has_lora:
             with torch.cuda.stream(side):
                 xa_gate, xa_up = fused_lora_a_stacked(X_flat, A_stack, r)
         else:
             xa_gate = xa_up = None
         e_base = torch.matmul(X_flat, W_gate.t())
-        # Phase 1c (default): g_base = X @ W_up.T  (sequential — both big GEMMs saturate SMs)
         g_base = torch.matmul(X_flat, W_up.t())
-        # LoRA-A finished long ago (~50 us vs gate's ~1.5 ms), sync is instant
         default_stream.wait_stream(side)
     else:
         e_base = torch.matmul(X_flat, W_gate.t())
@@ -362,9 +386,11 @@ def _v6_forward_impl(
         else:
             xa_gate = xa_up = None
 
-    # Phase 3 (Triton, default stream): fused LoRA addition + SwiGLU
+    # ------------------------------------------------------------------
+    # Phase 3 (Triton): fused LoRA addition + SwiGLU
     # In-place variant: when save_eg=True, e_full/g_full reuse the storage
     # of e_base/g_base (saves ~449 MB at LLaMA-8B scale).
+    # ------------------------------------------------------------------
     h, e_full, g_full = fused_lora_swiglu_inplace(
         e_base, g_base,
         xa_gate, xa_up,
@@ -373,17 +399,16 @@ def _v6_forward_impl(
         save_eg=save_eg,
     )
 
+    # ------------------------------------------------------------------
     # Phase 4: down GEMM in parallel with the tiny h @ A_down.T (if LoRA)
+    # ------------------------------------------------------------------
     if enable_streams and X_flat.is_cuda and has_lora and A_down is not None:
         default_stream = torch.cuda.current_stream()
         side = side_stream if side_stream is not None else _get_v6_side_stream()
         side.wait_stream(default_stream)
 
-        out = torch.matmul(h, W_down.t())  # [M, H] on default
+        out = torch.matmul(h, W_down.t())
         with torch.cuda.stream(side):
-            # h @ A_down.T is too small to fuse with the down GEMM in a single
-            # Triton kernel benefit-wise (single A, only r outputs). Just use
-            # cuBLAS on the side stream and let stream parallelism hide it.
             xa_down = torch.matmul(h, A_down.t())
         default_stream.wait_stream(side)
         out.addmm_(xa_down, B_down.t(), alpha=s_down)
@@ -396,8 +421,8 @@ def _v6_forward_impl(
     if len(orig_shape) == 3:
         out = out.view(orig_shape[0], orig_shape[1], -1)
         if e_full is not None:
-            e_full = e_full.view(orig_shape[0], orig_shape[1], -1)
-            g_full = g_full.view(orig_shape[0], orig_shape[1], -1)
+            e_full = e_full.reshape(orig_shape[0], orig_shape[1], -1)
+            g_full = g_full.reshape(orig_shape[0], orig_shape[1], -1)
 
     return out, e_full, g_full
 
@@ -412,6 +437,7 @@ def lora_mlp_v6(
     W_up: torch.Tensor, A_up: Optional[torch.Tensor], B_up: Optional[torch.Tensor], s_up: float,
     W_down: torch.Tensor, A_down: Optional[torch.Tensor], B_down: Optional[torch.Tensor], s_down: float,
     A_stack: Optional[torch.Tensor] = None,
+    W_gate_stack: Optional[torch.Tensor] = None,
     enable_streams: bool = True,
     side_stream: Optional[torch.cuda.Stream] = None,
 ) -> torch.Tensor:
@@ -421,15 +447,22 @@ def lora_mlp_v6(
     Args:
         X, W_*, A_*, B_*, s_*: standard LoRA MLP params.
         A_stack: optional pre-stacked ``cat([A_gate, A_up], dim=0)`` of shape
-                 ``[2r, H]``. If None, it is built on the fly.
-        enable_streams: if True (default), gate/up GEMMs run on separate CUDA
-                        streams (and same for the down phase).
+                 ``[2r, H]``.  Only used as a fallback when ``W_gate_stack``
+                 is not provided.
+        W_gate_stack: optional pre-stacked ``cat([W_gate, A_gate, A_up], dim=0)``
+                      of shape ``[I+2r, H]``.  When provided (or auto-built),
+                      replaces the separate gate cuBLAS + Triton LoRA-A with a
+                      single cuBLAS call, reducing launches from 7 to 6.
+        enable_streams: if True (default), the Phase-4 down/A_down GEMMs
+                        overlap on separate CUDA streams.
         side_stream: optional override for the side stream. If None, a
                      module-global cached stream is used.
     """
     has_lora = (A_gate is not None) and (B_gate is not None)
     r = A_gate.shape[0] if has_lora else 0
-    if has_lora and A_stack is None:
+    if has_lora and W_gate_stack is None:
+        W_gate_stack = stack_gate_lora_a(W_gate, A_gate, A_up)
+    if has_lora and W_gate_stack is None and A_stack is None:
         A_stack = stack_lora_a(A_gate, A_up)
 
     out, _, _ = _v6_forward_impl(
@@ -446,6 +479,7 @@ def lora_mlp_v6(
         save_eg=False,
         enable_streams=enable_streams,
         side_stream=side_stream,
+        W_gate_stack=W_gate_stack if has_lora else None,
     )
     return out
 
@@ -458,10 +492,11 @@ class LoRAMLPv6(torch.autograd.Function):
     """
     v6 LoRA MLP with full backward pass.
 
-    Forward:  cuBLAS gate / up + Triton-stacked LoRA-A + Triton fused
-              LoRA+SwiGLU + cuBLAS down + cuBLAS tiny A_down + addmm_.
-              Optionally splits the gate/up and down/A_down phases across
-              two CUDA streams (``enable_streams=True``).
+    Forward:  Stacked cuBLAS gate+LoRA-A (``[W_gate; A_gate; A_up]``) +
+              cuBLAS up + Triton fused LoRA+SwiGLU + cuBLAS down +
+              cuBLAS tiny A_down + addmm_.  6 launches total (down from 7).
+              Optionally overlaps down/A_down phases on separate CUDA
+              streams (``enable_streams=True``).
 
     Backward: identical math to v3 / v5 / v5_upgrade_1 — uses Unsloth's
               optimized in-place buffer-reuse pattern (matmul_lora +
@@ -477,6 +512,7 @@ class LoRAMLPv6(torch.autograd.Function):
         W_up, A_up, B_up, s_up,
         W_down, A_down, B_down, s_down,
         A_stack=None,
+        W_gate_stack=None,
         enable_streams: bool = True,
         side_stream: Optional[torch.cuda.Stream] = None,
     ):
@@ -489,7 +525,9 @@ class LoRAMLPv6(torch.autograd.Function):
         else:
             has_lora = (A_gate is not None) and (B_gate is not None)
             r = A_gate.shape[0] if has_lora else 0
-            if has_lora and A_stack is None:
+            if has_lora and W_gate_stack is None:
+                W_gate_stack = stack_gate_lora_a(W_gate, A_gate, A_up)
+            if has_lora and W_gate_stack is None and A_stack is None:
                 A_stack = stack_lora_a(A_gate, A_up)
 
             out, e, g = _v6_forward_impl(
@@ -506,6 +544,7 @@ class LoRAMLPv6(torch.autograd.Function):
                 save_eg=True,
                 enable_streams=enable_streams,
                 side_stream=side_stream,
+                W_gate_stack=W_gate_stack if has_lora else None,
             )
 
         ctx.save_for_backward(A_gate, B_gate, A_up, B_up, A_down, B_down, X, e, g)
@@ -590,6 +629,7 @@ class LoRAMLPv6(torch.autograd.Function):
             None, d_upA, d_upB, None,
             None, d_downA, d_downB, None,
             None,  # A_stack
+            None,  # W_gate_stack
             None,  # enable_streams
             None,  # side_stream
         )
@@ -657,22 +697,27 @@ class LoRAMLPv6Module(nn.Module):
         self.rank = r
         self.enable_streams = enable_streams
 
-        # Non-persistent buffer (won't show up in state_dict).
+        # Non-persistent buffers (won't show up in state_dict).
         self.register_buffer("_A_stack_cache", None, persistent=False)
+        self.register_buffer("_W_gate_stack_cache", None, persistent=False)
         self._cache_valid = False
         # Lazy side stream (not a buffer — CUDA Stream isn't a tensor).
         self._v6_side_stream: Optional[torch.cuda.Stream] = None
 
     def refresh_packed(self) -> None:
-        """Rebuild the cached stacked-A buffer from current A_gate / A_up."""
+        """Rebuild cached stacked buffers from current weights."""
         with torch.no_grad():
             self._A_stack_cache = stack_lora_a(self.A_gate.data, self.A_up.data)
+            self._W_gate_stack_cache = stack_gate_lora_a(
+                self.W_gate.data, self.A_gate.data, self.A_up.data,
+            )
         self._cache_valid = True
 
     def invalidate_packed(self) -> None:
-        """Force the next forward to rebuild the stacked-A cache."""
+        """Force the next forward to rebuild all cached packed buffers."""
         self._cache_valid = False
         self._A_stack_cache = None
+        self._W_gate_stack_cache = None
 
     def _get_side_stream(self) -> Optional[torch.cuda.Stream]:
         if not self.enable_streams:
@@ -690,6 +735,7 @@ class LoRAMLPv6Module(nn.Module):
             self.W_up, self.A_up, self.B_up, self.s_up,
             self.W_down, self.A_down, self.B_down, self.s_down,
             self._A_stack_cache,
+            self._W_gate_stack_cache,
             self.enable_streams,
             self._get_side_stream(),
         )
@@ -702,6 +748,7 @@ class LoRAMLPv6Module(nn.Module):
 __all__ = [
     "fused_lora_a_stacked",
     "stack_lora_a",
+    "stack_gate_lora_a",
     "lora_mlp_v6",
     "lora_mlp_v6_inference",
     "LoRAMLPv6",

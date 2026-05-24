@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from experiments.v6.lora_mlp_kernel_v6 import (
     lora_mlp_v6,
     stack_lora_a,
+    stack_gate_lora_a,
 )
 
 DEVICE = "cuda"
@@ -58,12 +59,14 @@ def make_v6_params(hidden, intermediate, rank, dtype=torch.bfloat16, device="cud
     s_down = 1.0
 
     A_stack = stack_lora_a(A_gate, A_up)
+    W_gate_stack = stack_gate_lora_a(W_gate, A_gate, A_up)
 
     return {
         "W_gate": W_gate, "A_gate": A_gate, "B_gate": B_gate, "s_gate": s_gate,
         "W_up": W_up, "A_up": A_up, "B_up": B_up, "s_up": s_up,
         "W_down": W_down, "A_down": A_down, "B_down": B_down, "s_down": s_down,
         "A_stack": A_stack,
+        "W_gate_stack": W_gate_stack,
     }
 
 
