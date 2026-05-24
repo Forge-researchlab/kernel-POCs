@@ -1,0 +1,191 @@
+# Project State Explainer Skill
+
+> Produces a comprehensive, human-readable "State of the Project" report.
+> Reads all project docs, synthesizes the current state, and writes a dated
+> analysis report. Designed for when the user wants a full picture of where
+> things stand.
+
+## When to Use
+
+- User asks "where are we?" or "what's the current state?"
+- User asks for a summary or status update
+- Before a planning session to establish shared context
+- After a long break from the project
+- When onboarding a new collaborator
+
+## Workflow
+
+### Step 1: Read All Project State
+
+Read these files to gather the full picture:
+
+1. `CHANGELOG.md` — version history, what's been tried
+2. `docs/research.md` — research context, open questions, improvement axes
+3. `docs/benchmarks.md` — benchmark methodology and results
+4. `docs/artifacts/ANALYSIS.md` — baseline analysis
+5. `docs/analysis/*.md` — all dated analysis reports (read most recent first)
+6. `benchmarks/results/*.csv` — raw benchmark data (most recent)
+7. Latest experiment file: find highest version in `experiments/v{N}/`
+8. `reference/{KERNEL_NAME}_pytorch.py` — understand the reference implementation
+9. `docs/research/papers/INDEX.md` — what external research has been gathered
+10. `docs/research/techniques/INDEX.md` — what techniques are known
+
+### Step 2: Synthesize the Report
+
+Produce a report with these sections. Write for a technical reader who hasn't
+looked at this project in a week — define terms on first use, explain context.
+
+#### Report Template
+
+```markdown
+# State of the Project: {KERNEL_NAME}
+
+**Date**: YYYY-MM-DD
+**Author**: Agent (auto-generated)
+**Current best version**: v{N}_{M} (or "no kernel versions yet")
+
+## Executive Summary
+
+{2-3 sentences. What is this project? Where does it stand? What's the headline
+finding or achievement?}
+
+## Current Best Kernel
+
+**Version**: v{N}_{M}
+**Approach**: {plain English description of the algorithm}
+**Key design decisions**:
+- {decision 1 and why}
+- {decision 2 and why}
+
+**How it works** (simplified):
+1. {step 1}
+2. {step 2}
+3. {step 3}
+
+## Performance Dashboard
+
+### Forward Pass (primary benchmark config)
+
+| Kernel | Time (ms) | vs Unsloth | vs PyTorch | Launches | Notes |
+|--------|-----------|------------|------------|----------|-------|
+| PyTorch naive | X.XX | X.XXx | 1.00x | 9+ | Baseline |
+| Unsloth matmul_lora × 3 | X.XX | 1.00x | X.XXx | 9 | Primary target |
+| Our v{N} | X.XX | X.XXx | X.XXx | N | Current best |
+
+### Performance Across Ranks
+
+| Rank | Unsloth (ms) | Ours (ms) | Speedup | Notes |
+|------|-------------|-----------|---------|-------|
+| 8 | — | — | — | |
+| 16 | — | — | — | Primary config |
+| 32 | — | — | — | |
+| 64 | — | — | — | |
+
+### Performance History
+
+| Version | Date | Fwd Speedup | Key Change |
+|---------|------|-------------|------------|
+| v1 | ... | X.XXx | ... |
+| v1_2 | ... | X.XXx | ... |
+
+## Top 3 Bottlenecks
+
+### 1. {Bottleneck name}
+
+**What**: {one sentence explanation}
+**Why it matters**: {impact on performance}
+**Evidence**: {benchmark data or profiling data that shows this}
+**Plain English**: {explain in accessible terms}
+
+### 2. {Bottleneck name}
+
+{same format}
+
+### 3. {Bottleneck name}
+
+{same format}
+
+## Recommended Next Steps
+
+Ranked by expected impact (highest first):
+
+### 1. {Action} — Expected: {X}% improvement
+
+**What**: {description}
+**Why**: {reasoning based on bottleneck analysis}
+**Risk**: {what could go wrong}
+**Effort**: {low/medium/high}
+
+### 2. {Action} — Expected: {X}% improvement
+
+{same format}
+
+### 3. {Action} — Expected: {X}% improvement
+
+{same format}
+
+## Open Questions
+
+Questions that need human input or experimentation to answer:
+
+1. **{Question}**: {context for why this matters}
+2. **{Question}**: {context}
+
+## Research Summary
+
+**Papers/findings reviewed**: {count}
+**Techniques cataloged**: {count} ({tried}/{untried})
+**Key insight from research**: {1 sentence}
+
+## Version History
+
+{Brief timeline of all versions with one-line descriptions}
+
+## Files to Read for More Detail
+
+- Benchmark data: `benchmarks/results/latest.csv`
+- Research notes: `docs/research.md`
+- Latest analysis: `docs/analysis/{latest}.md`
+- Current kernel: `experiments/v{N}/{KERNEL_NAME}_kernel_v{N}_{M}.py`
+```
+
+### Step 3: Save the Report
+
+Save to `docs/analysis/YYYY-MM-DD_state_of_project.md`.
+
+If a state-of-project report already exists for today, append a version suffix:
+`YYYY-MM-DD_state_of_project_v2.md`.
+
+### Step 4: Highlight for the User
+
+After writing the report, present the three most important takeaways directly
+in the chat response:
+
+1. The headline (executive summary, 1 sentence)
+2. Current performance vs target
+3. Recommended immediate next step
+
+## Principles
+
+1. **No jargon without explanation** — define terms on first use
+2. **Numbers need context** — "1.12x" alone is not enough; say "12% faster"
+3. **Honest assessment** — don't sugarcoat; if progress is slow, say so
+4. **Actionable** — every section should help the user decide what to do next
+5. **Concise** — the report should be skimmable in 2 minutes
+6. **Layered** — executive summary for the quick reader, detail for the deep diver
+
+## Project-Specific Paths (lora_qkv)
+
+```
+Base:           /workspace/kernel-POCs/kernels/lora_qkv/
+CHANGELOG:      CHANGELOG.md
+Research:       docs/research.md
+Benchmarks:     docs/benchmarks.md
+Analysis:       docs/analysis/
+Artifacts:      docs/artifacts/
+Experiments:    experiments/v{N}/lora_qkv_kernel_v{N}.py
+Reference:      reference/lora_qkv_pytorch.py
+Baseline:       reference/unsloth_baseline.py
+Papers:         docs/research/papers/INDEX.md
+Techniques:     docs/research/techniques/INDEX.md
+```

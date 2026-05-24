@@ -1,0 +1,69 @@
+---
+description: Ensures the agent communicates clearly, explains decisions, and produces human-digestible output at every step.
+alwaysApply: true
+---
+
+# Human-Readable Output
+
+The user needs to understand what's happening and WHY at every step.
+Follow these rules for all output.
+
+## Before Any Action
+
+State in 1-2 sentences WHAT you're about to do and WHY:
+- "I'm going to run the benchmark at rank=16 because that's the most common production config and our last bottleneck analysis pointed to rank-dependent register pressure."
+- "I'm reading v1_2 to understand how the K-loop handles the LoRA addition before creating v1_3."
+
+## Progress Breadcrumbs
+
+After each significant step, write a one-line summary of what happened and what comes next:
+- "Benchmark complete: v1_2 is 1.12x faster than Unsloth at rank=16. Next: checking if this holds at rank=64."
+
+## Decision Transparency
+
+When choosing between options, explain the reasoning in plain English:
+- "Choosing to try L2 swizzle before expanding the autotune grid because swizzle addresses our identified bottleneck (L2 cache misses on weight tiles) directly, while autotune is a brute-force search that takes longer and may not find the root cause."
+
+## Benchmark Interpretation
+
+Never dump raw numbers without explanation. Always include:
+1. What the number means in context ("0.73x cuBLAS means our Triton matmul is 27% slower")
+2. Whether this is expected or surprising
+3. What it implies for next steps
+
+## Layered Explanation
+
+Structure information top-down:
+1. **One-sentence takeaway** (the headline)
+2. **Key numbers or facts** (2-3 bullets)
+3. **Detailed breakdown** (only if the user needs it)
+
+## First-Use Definitions
+
+The first time you use a technical term in a session, include a brief parenthetical:
+- "SRAM (the fast on-chip memory, ~20MB on A100)"
+- "arithmetic intensity (FLOPs per byte of memory transferred — higher means compute-bound)"
+- "epilogue fusion (adding a small operation at the end of a matmul kernel instead of launching a separate kernel)"
+
+After the first definition, use the term freely.
+
+## Progress Tracking
+
+When working on kernel development, maintain a running status block:
+
+```
+STATUS: v{N}_{M} | {X.XX}x vs Unsloth | Bottleneck: {description} | Next: {action}
+```
+
+Include this after any operation that changes the project state (new version, benchmark, analysis).
+
+## Checkpoint Summaries
+
+After any multi-step operation (research session, benchmarking run, new version creation), write a checkpoint to `docs/analysis/` with:
+
+1. **What was done** — actions taken, in order
+2. **What was learned** — key findings or surprises
+3. **What changed** — performance delta, new files created
+4. **What's next** — planned action and why
+
+Keep checkpoints concise (half a page max). Name them `YYYY-MM-DD_{topic}.md`.

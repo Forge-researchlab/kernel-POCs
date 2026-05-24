@@ -1,0 +1,1476 @@
+{
+  "version": "v2",
+  "implementation_file": "kernels/rope/forge_rope_v2.py",
+  "timestamp_utc": "2026-05-23T15:20:43.840134+00:00",
+  "environment": {
+    "python": "3.11.10",
+    "torch": "2.4.1+cu124",
+    "triton": "3.0.0",
+    "platform": "Linux-6.8.0-110-generic-x86_64-with-glibc2.35",
+    "cuda_available": true,
+    "cuda_device_name": "NVIDIA A100-SXM4-80GB",
+    "cuda_device_capability": [
+      8,
+      0
+    ],
+    "cuda_runtime_version": "12.4"
+  },
+  "kernel_config": {
+    "version": "v2",
+    "grid": "(batch * seq_len, n_kv_heads)",
+    "head_grouping": "G = n_q // n_kv (exact division required)",
+    "tile_shape_q": "(G_BLOCK, BLOCK_SIZE)",
+    "tile_shape_k": "(BLOCK_SIZE,) single head per program",
+    "block_size": "next_power_of_2(head_dim // 2)",
+    "g_block": "next_power_of_2(G)",
+    "num_warps": 4,
+    "backward_strategy": "shared kernel via BACKWARD_PASS constexpr; sin negated after load",
+    "fp32_accumulation": true,
+    "gqa_handling": "implicit via G grouping \u2014 no mask branch",
+    "save_for_backward": [
+      "cos",
+      "sin"
+    ],
+    "out_of_place": true,
+    "autotune": false
+  },
+  "results": {
+    "import_smoke": {
+      "passed": true,
+      "error": null
+    },
+    "forward_correctness": {
+      "summary": {
+        "total": 30,
+        "passed": 30,
+        "failed": 0
+      },
+      "reference": "HF apply_rotary_pos_emb in fp32, cast to input dtype",
+      "cases": [
+        {
+          "shape_label": "demo_tiny",
+          "shape": {
+            "batch": 2,
+            "n_q": 4,
+            "n_kv": 2,
+            "seq_len": 16,
+            "head_dim": 64,
+            "G_ratio": 2
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "demo_tiny",
+          "shape": {
+            "batch": 2,
+            "n_q": 4,
+            "n_kv": 2,
+            "seq_len": 16,
+            "head_dim": 64,
+            "G_ratio": 2
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "demo_tiny",
+          "shape": {
+            "batch": 2,
+            "n_q": 4,
+            "n_kv": 2,
+            "seq_len": 16,
+            "head_dim": 64,
+            "G_ratio": 2
+          },
+          "dtype": "torch.float16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "demo_tiny",
+          "shape": {
+            "batch": 2,
+            "n_q": 4,
+            "n_kv": 2,
+            "seq_len": 16,
+            "head_dim": 64,
+            "G_ratio": 2
+          },
+          "dtype": "torch.float16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "demo_tiny",
+          "shape": {
+            "batch": 2,
+            "n_q": 4,
+            "n_kv": 2,
+            "seq_len": 16,
+            "head_dim": 64,
+            "G_ratio": 2
+          },
+          "dtype": "torch.float32",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 2.384185791015625e-07,
+            "v2_vs_hffp32_k": 2.384185791015625e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "demo_tiny",
+          "shape": {
+            "batch": 2,
+            "n_q": 4,
+            "n_kv": 2,
+            "seq_len": 16,
+            "head_dim": 64,
+            "G_ratio": 2
+          },
+          "dtype": "torch.float32",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 2.384185791015625e-07,
+            "v2_vs_hffp32_k": 2.384185791015625e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float32",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 4.76837158203125e-07,
+            "v2_vs_hffp32_k": 4.76837158203125e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float32",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 4.76837158203125e-07,
+            "v2_vs_hffp32_k": 4.76837158203125e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float32",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 4.76837158203125e-07,
+            "v2_vs_hffp32_k": 4.76837158203125e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float32",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 4.76837158203125e-07,
+            "v2_vs_hffp32_k": 4.76837158203125e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.float16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.float16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.float32",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 4.76837158203125e-07,
+            "v2_vs_hffp32_k": 4.76837158203125e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.float32",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 4.76837158203125e-07,
+            "v2_vs_hffp32_k": 4.76837158203125e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.bfloat16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.float16",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.float16",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 0.0,
+            "v2_vs_hffp32_k": 0.0,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.float32",
+          "cos_batched": false,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 4.76837158203125e-07,
+            "v2_vs_hffp32_k": 4.76837158203125e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.float32",
+          "cos_batched": true,
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "diffs": {
+            "v2_vs_hffp32_q": 4.76837158203125e-07,
+            "v2_vs_hffp32_k": 4.76837158203125e-07,
+            "v2_vs_v1_q": 0.0,
+            "v2_vs_v1_k": 0.0
+          },
+          "has_nan_q": false,
+          "has_nan_k": false,
+          "passed": true
+        }
+      ]
+    },
+    "backward_correctness": {
+      "summary": {
+        "total": 8,
+        "passed": 8,
+        "failed": 0
+      },
+      "reference": "HF apply_rotary_pos_emb + autograd in fp32, grads cast to input dtype",
+      "cases": [
+        {
+          "shape_label": "demo_tiny",
+          "shape": {
+            "batch": 2,
+            "n_q": 4,
+            "n_kv": 2,
+            "seq_len": 16,
+            "head_dim": 64,
+            "G_ratio": 2
+          },
+          "dtype": "torch.bfloat16",
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "forward_diff": {
+            "q": 0.0,
+            "k": 0.0
+          },
+          "backward_diff": {
+            "dq": 0.0,
+            "dk": 0.0
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "demo_tiny",
+          "shape": {
+            "batch": 2,
+            "n_q": 4,
+            "n_kv": 2,
+            "seq_len": 16,
+            "head_dim": 64,
+            "G_ratio": 2
+          },
+          "dtype": "torch.float32",
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "forward_diff": {
+            "q": 2.384185791015625e-07,
+            "k": 2.384185791015625e-07
+          },
+          "backward_diff": {
+            "dq": 2.384185791015625e-07,
+            "dk": 2.384185791015625e-07
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "forward_diff": {
+            "q": 0.0,
+            "k": 0.0
+          },
+          "backward_diff": {
+            "dq": 0.0,
+            "dk": 0.0
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float32",
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "forward_diff": {
+            "q": 4.76837158203125e-07,
+            "k": 4.76837158203125e-07
+          },
+          "backward_diff": {
+            "dq": 4.76837158203125e-07,
+            "dk": 4.76837158203125e-07
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.bfloat16",
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "forward_diff": {
+            "q": 0.0,
+            "k": 0.0
+          },
+          "backward_diff": {
+            "dq": 0.0,
+            "dk": 0.0
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.float32",
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "forward_diff": {
+            "q": 4.76837158203125e-07,
+            "k": 4.76837158203125e-07
+          },
+          "backward_diff": {
+            "dq": 4.76837158203125e-07,
+            "dk": 2.384185791015625e-07
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.bfloat16",
+          "tolerance": {
+            "atol": 0.05,
+            "rtol": 0.05
+          },
+          "forward_diff": {
+            "q": 0.0,
+            "k": 0.0
+          },
+          "backward_diff": {
+            "dq": 0.0,
+            "dk": 0.0
+          },
+          "passed": true
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.float32",
+          "tolerance": {
+            "atol": 1e-05,
+            "rtol": 1e-05
+          },
+          "forward_diff": {
+            "q": 4.76837158203125e-07,
+            "k": 4.76837158203125e-07
+          },
+          "backward_diff": {
+            "dq": 4.76837158203125e-07,
+            "dk": 4.76837158203125e-07
+          },
+          "passed": true
+        }
+      ]
+    },
+    "gradcheck_fp64": {
+      "shape": {
+        "batch": 2,
+        "n_q": 4,
+        "n_kv": 2,
+        "seq_len": 8,
+        "head_dim": 32,
+        "G_ratio": 2
+      },
+      "dtype": "torch.float64",
+      "gradcheck_settings": {
+        "eps": 0.001,
+        "atol": 0.01,
+        "rtol": 0.01,
+        "nondet_tol": 0.001
+      },
+      "manual_check": {
+        "one_hot_position": {
+          "s": 1,
+          "d": 0
+        },
+        "expected_cos": 0.5403022766113281,
+        "expected_neg_sin": -0.8414710164070129,
+        "got_lo": 0.5403022766113281,
+        "got_hi": -0.8414710164070129,
+        "lo_diff": 0.0,
+        "hi_diff": 0.0,
+        "passed": true
+      },
+      "passed": true,
+      "error": null
+    },
+    "forward_timing": {
+      "cases": [
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "pytorch_ref": 0.3023136258125305,
+            "liger": 0.12356826663017273,
+            "unsloth_default": 0.1295645534992218,
+            "unsloth_fused_qk": 0.09858084470033646,
+            "forge_v1": 0.09952417761087418,
+            "forge_v2": 0.041424818336963654
+          },
+          "speedup_vs_pytorch": {
+            "liger": 2.446531249947242,
+            "unsloth_default": 2.3333050409836535,
+            "unsloth_fused_qk": 3.066656881785663,
+            "forge_v1": 3.0375897904380094,
+            "forge_v2": 7.29788657981329
+          },
+          "v2_speedup_vs_v1": 2.4025253846935537,
+          "total_hbm_traffic_bytes": 42205184,
+          "forge_v2_bandwidth_gbps": 1018.8381191364217
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "pytorch_ref": 0.2542969286441803,
+            "liger": 0.1132783591747284,
+            "unsloth_default": 0.13885512948036194,
+            "unsloth_fused_qk": 0.0976434126496315,
+            "forge_v1": 0.09864460676908493,
+            "forge_v2": 0.04070291668176651
+          },
+          "speedup_vs_pytorch": {
+            "liger": 2.244885347005557,
+            "unsloth_default": 1.8313830363763774,
+            "unsloth_fused_qk": 2.6043429018264654,
+            "forge_v1": 2.5779101055109743,
+            "forge_v2": 6.247634061027781
+          },
+          "v2_speedup_vs_v1": 2.4235267349593714,
+          "total_hbm_traffic_bytes": 42205184,
+          "forge_v2_bandwidth_gbps": 1036.9080999766893
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "pytorch_ref": 0.47217535972595215,
+            "liger": 0.2163451761007309,
+            "unsloth_default": 0.2468603402376175,
+            "unsloth_fused_qk": 0.18362417817115784,
+            "forge_v1": 0.19074320793151855,
+            "forge_v2": 0.0746132880449295
+          },
+          "speedup_vs_pytorch": {
+            "liger": 2.182509304048943,
+            "unsloth_default": 1.9127226320414847,
+            "unsloth_fused_qk": 2.5714225894905463,
+            "forge_v1": 2.4754504490428544,
+            "forge_v2": 6.328301192699412
+          },
+          "v2_speedup_vs_v1": 2.556424102589604,
+          "total_hbm_traffic_bytes": 84934656,
+          "forge_v2_bandwidth_gbps": 1138.3314986581925
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "pytorch_ref": 0.4703314006328583,
+            "liger": 0.2141568511724472,
+            "unsloth_default": 0.24403925240039825,
+            "unsloth_fused_qk": 0.18075260519981384,
+            "forge_v1": 0.1899714469909668,
+            "forge_v2": 0.07332580536603928
+          },
+          "speedup_vs_pytorch": {
+            "liger": 2.1962005794254496,
+            "unsloth_default": 1.9272776654026937,
+            "unsloth_fused_qk": 2.602072595927058,
+            "forge_v1": 2.475800485191981,
+            "forge_v2": 6.414268459582327
+          },
+          "v2_speedup_vs_v1": 2.5907856864665515,
+          "total_hbm_traffic_bytes": 84934656,
+          "forge_v2_bandwidth_gbps": 1158.3187607147286
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "pytorch_ref": 0.08902539312839508,
+            "liger": 0.03305383399128914,
+            "unsloth_default": 0.0916495993733406,
+            "unsloth_fused_qk": 0.06620321422815323,
+            "forge_v1": 0.029044628143310547,
+            "forge_v2": 0.014489581808447838
+          },
+          "speedup_vs_pytorch": {
+            "liger": 2.693345442221814,
+            "unsloth_default": 0.9713669643633067,
+            "unsloth_fused_qk": 1.3447291671004187,
+            "forge_v1": 3.0651242181215217,
+            "forge_v2": 6.14409679349688
+          },
+          "v2_speedup_vs_v1": 2.0045180411194963,
+          "total_hbm_traffic_bytes": 9961472,
+          "forge_v2_bandwidth_gbps": 687.4920292173084
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "pytorch_ref": 0.08890214562416077,
+            "liger": 0.033670660108327866,
+            "unsloth_default": 0.09050001949071884,
+            "unsloth_fused_qk": 0.06410722434520721,
+            "forge_v1": 0.029516708105802536,
+            "forge_v2": 0.014618092216551304
+          },
+          "speedup_vs_pytorch": {
+            "liger": 2.64034460085243,
+            "unsloth_default": 0.9823439389786878,
+            "unsloth_fused_qk": 1.3867726536628202,
+            "forge_v1": 3.0119261709500713,
+            "forge_v2": 6.0816517167337
+          },
+          "v2_speedup_vs_v1": 2.0191901698624055,
+          "total_hbm_traffic_bytes": 9961472,
+          "forge_v2_bandwidth_gbps": 681.4481570119763
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "pytorch_ref": 0.19368131458759308,
+            "liger": 0.09185516089200974,
+            "unsloth_default": 0.12125812470912933,
+            "unsloth_fused_qk": 0.07546456903219223,
+            "forge_v1": 0.06822262704372406,
+            "forge_v2": 0.06986108422279358
+          },
+          "speedup_vs_pytorch": {
+            "liger": 2.108551252937177,
+            "unsloth_default": 1.5972646373361827,
+            "unsloth_fused_qk": 2.5665198525810315,
+            "forge_v1": 2.8389600779146518,
+            "forge_v2": 2.772377737080706
+          },
+          "v2_speedup_vs_v1": 0.9765469259846538,
+          "total_hbm_traffic_bytes": 34078720,
+          "forge_v2_bandwidth_gbps": 487.80691538252904
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "pytorch_ref": 0.19112959504127502,
+            "liger": 0.09034544229507446,
+            "unsloth_default": 0.12336800247430801,
+            "unsloth_fused_qk": 0.07201558351516724,
+            "forge_v1": 0.06742077320814133,
+            "forge_v2": 0.0696033239364624
+          },
+          "speedup_vs_pytorch": {
+            "liger": 2.1155421921233453,
+            "unsloth_default": 1.549263919394972,
+            "unsloth_fused_qk": 2.654003282512057,
+            "forge_v1": 2.8348769369823152,
+            "forge_v2": 2.745983729394134
+          },
+          "v2_speedup_vs_v1": 0.9686430100620852,
+          "total_hbm_traffic_bytes": 34078720,
+          "forge_v2_bandwidth_gbps": 489.61339879556414
+        }
+      ]
+    },
+    "backward_timing": {
+      "cases": [
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "forge_v1": 0.10127962380647659,
+            "forge_v2": 0.0675618052482605,
+            "liger": 0.1036868765950203,
+            "pytorch_ref": 0.3174833357334137
+          },
+          "v2_speedup_vs_v1": 1.4990662761943327
+        },
+        {
+          "shape_label": "qwen3_8b_short",
+          "shape": {
+            "batch": 4,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 512,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "forge_v1": 0.10212791711091995,
+            "forge_v2": 0.07308168709278107,
+            "liger": 0.12259327620267868,
+            "pytorch_ref": 0.29382485151290894
+          },
+          "v2_speedup_vs_v1": 1.3974488161618814
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "forge_v1": 0.19335702061653137,
+            "forge_v2": 0.07624029368162155,
+            "liger": 0.1674116849899292,
+            "pytorch_ref": 0.5575417876243591
+          },
+          "v2_speedup_vs_v1": 2.536152620607519
+        },
+        {
+          "shape_label": "qwen3_8b_train",
+          "shape": {
+            "batch": 2,
+            "n_q": 32,
+            "n_kv": 8,
+            "seq_len": 2048,
+            "head_dim": 128,
+            "G_ratio": 4
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "forge_v1": 0.19183450937271118,
+            "forge_v2": 0.08354523032903671,
+            "liger": 0.16737478971481323,
+            "pytorch_ref": 0.5560915470123291
+          },
+          "v2_speedup_vs_v1": 2.2961754802420815
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "forge_v1": 0.03449621796607971,
+            "forge_v2": 0.04013390839099884,
+            "liger": 0.08078427612781525,
+            "pytorch_ref": 0.23064638674259186
+          },
+          "v2_speedup_vs_v1": 0.8595279988683201
+        },
+        {
+          "shape_label": "mqa_extreme",
+          "shape": {
+            "batch": 2,
+            "n_q": 8,
+            "n_kv": 1,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 8
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "forge_v1": 0.052861154079437256,
+            "forge_v2": 0.03241203352808952,
+            "liger": 0.054051678627729416,
+            "pytorch_ref": 0.24657195806503296
+          },
+          "v2_speedup_vs_v1": 1.6309113722724535
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.bfloat16",
+          "median_ms": {
+            "forge_v1": 0.06839453428983688,
+            "forge_v2": 0.07014907896518707,
+            "liger": 0.09007227420806885,
+            "pytorch_ref": 0.24886642396450043
+          },
+          "v2_speedup_vs_v1": 0.9749883433790925
+        },
+        {
+          "shape_label": "mha_no_gqa",
+          "shape": {
+            "batch": 2,
+            "n_q": 16,
+            "n_kv": 16,
+            "seq_len": 1024,
+            "head_dim": 128,
+            "G_ratio": 1
+          },
+          "dtype": "torch.float16",
+          "median_ms": {
+            "forge_v1": 0.06770940124988556,
+            "forge_v2": 0.06939924508333206,
+            "liger": 0.07126233726739883,
+            "pytorch_ref": 0.24028229713439941
+          },
+          "v2_speedup_vs_v1": 0.9756504003549693
+        }
+      ]
+    }
+  },
+  "errors": []
+}

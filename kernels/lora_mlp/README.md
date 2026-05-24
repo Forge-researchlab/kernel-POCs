@@ -61,14 +61,14 @@ python benchmarks/bench_lora_mlp.py \
 
 ## Done Gates
 
-- [ ] Forward matches PyTorch reference (rtol=1e-3, atol=1e-3 for bf16)
-- [ ] Backward passes `torch.autograd.gradcheck` (fp64, eps=1e-6)
-- [ ] Wrapped in `torch.autograd.Function` with correct `ctx.save_for_backward`
-- [ ] Handles variable sequence lengths, batch sizes, and LoRA ranks
-- [ ] bf16 and fp32 dtypes supported
+- [x] Forward matches PyTorch reference (rtol=1e-3, atol=1e-3 for bf16) — v2
+- [x] Backward passes `torch.autograd.gradcheck` (fp64, eps=1e-6) — v2 LoRAMLPv2
+- [x] Wrapped in `torch.autograd.Function` with correct `ctx.save_for_backward` — v2 LoRAMLPv2
+- [x] Handles variable sequence lengths, batch sizes, and LoRA ranks — tested r=8,16,32
+- [x] bf16 and fp32 dtypes supported — v2
 - [ ] Memory usage <= PyTorch baseline (no extra intermediate buffers)
-- [ ] Benchmarked at LLaMA-3 scale (4096 hidden, 14336 intermediate, rank 16)
-- [ ] Measurable speedup over unfused PyTorch + LoRA baseline
+- [x] Benchmarked at LLaMA-3 scale (4096 hidden, 14336 intermediate, rank 16) — v3: 1.02-1.14x Unsloth
+- [x] Measurable speedup over unfused PyTorch + LoRA baseline — v3: **1.02-1.14x faster than Unsloth**
 
 ## Key Parameters
 

@@ -1,0 +1,76 @@
+---
+description: Kernel experiment versioning and research iteration workflow
+alwaysApply: true
+---
+
+# Kernel Research Workflow
+
+## Project Layout
+
+```
+kernels/{KERNEL_NAME}/
+├── reference/             # Read-only reference implementations
+├── experiments/v{N}/      # Versioned kernel experiments
+├── benchmarks/            # Benchmark harness + results/
+├── tests/                 # Correctness tests
+├── docs/
+│   ├── research.md        # Research context and exploration axes
+│   ├── benchmarks.md      # Benchmark methodology and results log
+│   ├── analysis/          # Dated analysis reports
+│   └── artifacts/         # Saved reference code from baselines
+└── CHANGELOG.md           # Version history with results
+```
+
+## Experiment Versioning
+
+- A **version** (v1, v2, v3) = fundamentally different algorithmic approach
+- A **minor upgrade** within a version uses suffix: `v1_2`, `v1_3` (NOT `v1_upgrade_1`)
+- Never modify a previous version — copy forward and iterate
+- File naming: `{KERNEL_NAME}_kernel_v{N}.py` or `{KERNEL_NAME}_kernel_v{N}_{M}.py`
+
+### Examples
+
+```
+experiments/v1/lora_qkv_kernel_v1.py       # initial v1 approach
+experiments/v1/lora_qkv_kernel_v1_2.py     # first refinement of v1
+experiments/v1/lora_qkv_kernel_v1_3.py     # second refinement of v1
+experiments/v2/lora_qkv_kernel_v2.py       # new algorithmic approach
+experiments/v2/lora_qkv_kernel_v2_2.py     # refinement of v2
+```
+
+## After Every Change
+
+1. Run correctness tests: `pytest tests/ -v`
+2. Run benchmarks and save results: `python benchmarks/bench_{KERNEL_NAME}.py --save benchmarks/results/`
+3. Update `CHANGELOG.md` with approach, results, and limitations
+4. Update `docs/benchmarks.md` results table with latest numbers
+5. Document key findings in the experiment file's top docstring
+
+## Iteration Checklist
+
+Before moving to the next version:
+- [ ] Forward pass matches PyTorch reference (rtol=1e-3, atol=1e-3 for bf16)
+- [ ] Backward pass matches PyTorch gradient
+- [ ] `gradcheck` passes in fp64 on small inputs
+- [ ] Tested across key evaluation dimensions (below)
+- [ ] Benchmarked against PyTorch baseline at production scale
+- [ ] Key findings documented in the file's top docstring
+- [ ] CHANGELOG.md updated
+- [ ] docs/benchmarks.md updated
+
+## Evaluation Dimensions
+
+Every kernel version must be tested across:
+1. **LoRA rank** — 8, 16, 32, 64 (determines if LoRA fits in registers vs SRAM)
+2. **Sequence length** — 512 to 4096 (scales the M dimension of the matmul)
+3. **Hidden / head dim** — varies by model architecture
+4. **Batch size** — 1 to 8 (affects parallelism and memory pressure)
+5. **Dtype** — bf16 and fp32
+
+## Key Principles
+
+- fp32 accumulation: always accumulate matmul results in fp32, cast output back to input dtype
+- Never modify old versions: each file is an immutable snapshot
+- Benchmark before and after: quantify the impact of every change
+- Measure then optimize: no guessing about bottlenecks — profile first
+- Document what you tried and why, even if it didn't work

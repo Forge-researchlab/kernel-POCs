@@ -1,0 +1,77 @@
+---
+description: Triton kernel development best practices and patterns
+alwaysApply: true
+---
+
+# Triton Kernel Development
+
+## Code Style
+
+- Every kernel file starts with a module docstring explaining the approach, key design decisions, and known limitations
+- Use `@triton.autotune` with explicit configs rather than relying on defaults
+- Type-annotate all Python wrapper functions
+- Use `tl.constexpr` for compile-time constants (BLOCK sizes, num_warps)
+- Group kernel parameters: pointers first, then dimensions, then strides, then constexprs
+
+## Testing Pattern
+
+```python
+def test_forward_correctness():
+    """Compare fused kernel output against PyTorch reference."""
+    torch.manual_seed(42)
+    # Run both implementations on identical inputs
+    # Assert with rtol=1e-3, atol=1e-3 for bf16; tighter for fp32
+
+def test_backward_correctness():
+    """Compare gradients against PyTorch autograd."""
+    # Use autograd.Function wrapper
+    # Compare all gradient tensors individually
+
+def test_gradcheck():
+    """torch.autograd.gradcheck in fp64 on small inputs."""
+    # Small shapes (M=16, N=16, K=16, r=4)
+    # eps=1e-6, atol=1e-4, rtol=1e-4
+```
+
+## Benchmarking Pattern
+
+```python
+import triton
+
+ms = triton.testing.do_bench(lambda: kernel_fn(...), warmup=10, rep=50)
+```
+
+- Always use `triton.testing.do_bench` for GPU timing (handles warmup and sync)
+- Measure forward and backward separately
+- Report both latency (ms) and throughput (TFLOPS) where applicable
+- Flush L2 cache between independent measurements with `torch.cuda.empty_cache()`
+
+## Common Pitfalls
+
+- **bf16 accumulation**: always accumulate in fp32 (`tl.float32`), cast output back to bf16
+- **Power-of-2 block sizes**: Triton requires them for `tl.dot`
+- **Host-device sync**: avoid `.item()`, `.cpu()`, or Python control flow on GPU tensors in hot paths
+- **Memory alignment**: ensure tensor strides are compatible with block sizes
+- **`tl.dot` minimum size**: both operands must be at least 16×16 for good performance
+- **Register pressure**: more accumulators = fewer tiles in flight = lower occupancy
+- **Atomic operations**: avoid them in performance-critical paths; use deterministic reduction instead
+- **Grid size limits**: keep total grid < 2^31; use multi-dimensional grids for large problems
+
+## Debugging
+
+- Test in fp64 first (numerical issues are easier to spot)
+- Use small inputs (M=4, N=4, K=4) to trace individual tiles
+- Print block indices with `tl.device_print` (remove before benchmarking)
+- Compare tile-by-tile against a NumPy reference
+- Check for off-by-one in pointer arithmetic (most common Triton bug)
+- Use `TRITON_INTERPRET=1` environment variable for CPU-emulated debugging
+- Verify with `torch.autograd.gradcheck` before trusting backward pass correctness
+
+## Performance Tuning Checklist
+
+1. Autotune over BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages
+2. Ensure the base matmul is compute-bound (not memory-bound) at target shapes
+3. Check occupancy: fewer registers per thread = more concurrent warps
+4. Use software pipelining (`num_stages > 1`) for memory-latency hiding
+5. Consider L2 cache swizzle patterns for large grid dimensions
+6. Profile with `ncu` (Nsight Compute) to identify actual bottlenecks
