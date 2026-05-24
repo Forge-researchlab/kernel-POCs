@@ -1,13 +1,14 @@
 """Isolated Unsloth GEGLU benchmark.
 
-Run this file as a separate Python process. Importing Unsloth can patch global
-runtime behavior, so shared Forge/Liger/PyTorch benchmarks must not import this
-module or benchmark Unsloth in-process.
+Run this file as a separate Python process. It intentionally imports Unsloth
+normally inside this process only; shared Forge/Liger/PyTorch benchmarks must
+not import this module or benchmark Unsloth in-process.
 """
 
 import argparse
 import csv
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -17,16 +18,9 @@ import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE = ROOT.parent
-UNSLOTH_SRC = WORKSPACE / "unsloth"
-if not UNSLOTH_SRC.exists():
-    raise RuntimeError(f"expected Unsloth checkout at {UNSLOTH_SRC}")
-sys.path.insert(0, str(UNSLOTH_SRC))
 
-try:
-    from unsloth.kernels.geglu import geglu_approx_forward_kernel
-    from unsloth.kernels.geglu import geglu_exact_forward_kernel
-except Exception as exc:
-    raise RuntimeError("Unsloth import failed inside the isolated benchmark process") from exc
+geglu_approx_forward_kernel = None
+geglu_exact_forward_kernel = None
 
 
 DTYPES = {
@@ -49,6 +43,76 @@ SUITES = {
         (1, 128, 3072, 24576),
     ],
 }
+
+
+def _candidate_unsloth_paths(user_path: str | None) -> list[Path]:
+    """Inputs: CLI path/env. Outputs: possible roots. Logic: support RunPod and local layouts."""
+    candidates = []
+    if user_path:
+        candidates.append(Path(user_path).expanduser())
+    env_path = os.environ.get("UNSLOTH_SRC")
+    if env_path:
+        candidates.append(Path(env_path).expanduser())
+    candidates.extend(
+        [
+            WORKSPACE / "unsloth",
+            ROOT / "unsloth",
+            Path.cwd() / "unsloth",
+            Path("/workspace/unsloth"),
+        ]
+    )
+    return candidates
+
+
+def _unsloth_import_root(path: Path) -> Path | None:
+    """Inputs: repo/package path. Outputs: sys.path root. Logic: accept checkout root or package dir."""
+    if (path / "unsloth" / "kernels" / "geglu.py").exists():
+        return path
+    if (path / "kernels" / "geglu.py").exists() and path.name == "unsloth":
+        return path.parent
+    return None
+
+
+def _load_unsloth(user_path: str | None) -> str:
+    """Inputs: optional source path. Outputs: source description. Logic: import Unsloth only here."""
+    global geglu_approx_forward_kernel, geglu_exact_forward_kernel
+
+    failures = []
+    for candidate in _candidate_unsloth_paths(user_path):
+        if not candidate.exists():
+            failures.append(f"{candidate}: missing")
+            continue
+        candidate = candidate.resolve()
+        import_root = _unsloth_import_root(candidate)
+        if import_root is None:
+            failures.append(f"{candidate}: no unsloth/kernels/geglu.py")
+            continue
+        sys.path.insert(0, str(import_root))
+        try:
+            from unsloth.kernels.geglu import geglu_approx_forward_kernel as approx_kernel
+            from unsloth.kernels.geglu import geglu_exact_forward_kernel as exact_kernel
+        except Exception as exc:
+            failures.append(f"{import_root}: {type(exc).__name__}: {exc}")
+            continue
+
+        geglu_approx_forward_kernel = approx_kernel
+        geglu_exact_forward_kernel = exact_kernel
+        return str(import_root)
+
+    try:
+        from unsloth.kernels.geglu import geglu_approx_forward_kernel as approx_kernel
+        from unsloth.kernels.geglu import geglu_exact_forward_kernel as exact_kernel
+    except Exception as exc:
+        searched = "\n  - ".join(failures) if failures else "no candidate paths"
+        raise RuntimeError(
+            "Could not import Unsloth GEGLU in the isolated benchmark process.\n"
+            "Clone Unsloth or point to an existing checkout with --unsloth-src /path/to/unsloth.\n"
+            f"Searched:\n  - {searched}"
+        ) from exc
+
+    geglu_approx_forward_kernel = approx_kernel
+    geglu_exact_forward_kernel = exact_kernel
+    return "installed Python package"
 
 
 def _check_cuda() -> None:
@@ -120,6 +184,8 @@ def _torch_geglu_reference(gate: torch.Tensor, up: torch.Tensor, approximate: st
 
 def _unsloth_geglu(gate: torch.Tensor, up: torch.Tensor, approximate: str) -> torch.Tensor:
     """Inputs: gate/up tensors. Outputs: Unsloth GEGLU. Logic: call standalone Unsloth forward kernel."""
+    if geglu_approx_forward_kernel is None or geglu_exact_forward_kernel is None:
+        raise RuntimeError("Unsloth kernels were not loaded")
     if approximate == "tanh":
         return geglu_approx_forward_kernel(gate, up)
     return geglu_exact_forward_kernel(gate, up)
@@ -155,6 +221,8 @@ def _check_outputs(shape, dtype: torch.dtype, approximate: str) -> None:
 def run(args) -> None:
     """Inputs: CLI args. Outputs: printed/CSV rows. Logic: isolated Unsloth forward benchmark."""
     _check_cuda()
+    unsloth_source = _load_unsloth(args.unsloth_src)
+    print(f"using isolated Unsloth source: {unsloth_source}", file=sys.stderr)
     torch.manual_seed(args.seed)
     device_name = torch.cuda.get_device_name()
     rows = []
@@ -208,6 +276,7 @@ def parse_args():
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--rep", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--unsloth-src", help="Path to an Unsloth checkout; also accepts UNSLOTH_SRC env var")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--csv")
     return parser.parse_args()
