@@ -3,17 +3,22 @@
 Measured 2026-05-23 at LLaMA-8B scale (batch=4, seq=2048, rank=16):
     V3:        12.38 ms  = 1.14x Unsloth's LoRA_MLP, rank-independent up to r=64.
 
-NOT yet wired into forge.patch — PEFT integration deferred per the Day 2 scope
-ladder (item 9). The mapping in QWEN3_MAPPING / GEMMA_MAPPING declares "lora_mlp"
-as a kernel name so the future PEFT-aware closure factory can be a one-line
-swap-in, but today it raises NotImplementedError.
-
-Re-exported here for direct callers (benchmarks, tests, the LoRA-MLP test suite
-under kernels/lora_mlp/tests/).
+Wired into forge.patch for Qwen PEFT models when gate/up/down projections all
+have one active, bias-free, dropout-free LoRA adapter. Re-exported here for
+direct callers (benchmarks, tests, the LoRA-MLP test suite under
+kernels/lora_mlp/tests/).
 """
-from kernels.lora_mlp.experiments.v3.lora_mlp_kernel_v3 import (
-    lora_mlp_v3,
+import sys
+from pathlib import Path
+
+_KERNEL_DIR = Path(__file__).resolve().parents[3] / "kernels" / "lora_mlp"
+if str(_KERNEL_DIR) not in sys.path:
+    sys.path.insert(0, str(_KERNEL_DIR))
+
+from kernels.lora_mlp.experiments.v3.lora_mlp_kernel_v3 import (  # noqa: E402
+    LoRAMLPv3,
     fused_lora_swiglu,
+    lora_mlp_v3,
 )
 
-__all__ = ["lora_mlp_v3", "fused_lora_swiglu"]
+__all__ = ["LoRAMLPv3", "lora_mlp_v3", "fused_lora_swiglu"]

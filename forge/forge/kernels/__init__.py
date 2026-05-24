@@ -10,12 +10,9 @@ Available (real, wired into the patching layer):
     forge.kernels.layernorm    — ForgeLayerNormLiger        (kernels/layernorm/)
     forge.kernels.embedding    — ForgeEmbeddingFunction     (kernels/embedding/experiments/v1/)
     forge.kernels.lora_mlp     — lora_mlp_v3                (kernels/lora_mlp/experiments/v3/)
-                                  [not wired into patching yet — PEFT integration deferred]
+    forge.kernels.lora_qkv     — lora_qkv_v3                (kernels/lora_qkv/experiments/v3/)
 
 Declared in QWEN3/GEMMA_MAPPING but NOT yet built/wired by the team — calling
 these through forge.patch raises NotImplementedError when explicitly requested:
     geglu (GELU)      — H6
-    cross_entropy     — H3 model/loss forward interception
-    lora_qkv          — H5
-    fused_linear_ce   — Qwen causal-LM forward interception
 """

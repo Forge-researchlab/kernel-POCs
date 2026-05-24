@@ -40,6 +40,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from .qwen3 import QWEN3_MAPPING, QWEN3_MODULE_LEVEL_PATCHES
 from .gemma import GEMMA_MAPPING, GEMMA_MODULE_LEVEL_PATCHES
+from .kernels import FORWARD_MAKERS as _FORWARD_MAKERS
+from .kernels import ForgeSkipPatch
 
 
 # ----------------------------------------------------------------------------
@@ -55,8 +57,20 @@ _ARCH_TO_MAPPING: Dict[str, Tuple[dict, dict]] = {
 }
 
 
+def _model_config(model):
+    config = getattr(model, "config", None)
+    if config is not None:
+        return config
+    base_model = getattr(model, "base_model", None)
+    inner = getattr(base_model, "model", None)
+    config = getattr(inner, "config", None)
+    if config is not None:
+        return config
+    raise ValueError("forge.patch: model does not expose a Hugging Face config.")
+
+
 def _detect_architecture(model) -> str:
-    model_type = getattr(model.config, "model_type", None)
+    model_type = getattr(_model_config(model), "model_type", None)
     if model_type not in _ARCH_TO_MAPPING:
         raise ValueError(
             f"forge.patch: no Forge mapping for model_type={model_type!r}. "
@@ -66,102 +80,9 @@ def _detect_architecture(model) -> str:
 
 
 # ----------------------------------------------------------------------------
-# Closure factories — one per kernel name in the *_MAPPING dicts.
-# Each factory takes (module, config) and returns the new `forward` function.
-# The closure must close over `module.weight` (not a copy) so LoRA updates flow.
+# Kernel-specific forward factories live in forge.patching.kernels.
+# core.py owns only orchestration: validation, traversal, mutation, restoration.
 # ----------------------------------------------------------------------------
-
-def _make_embedding_forward(module, config):
-    """nn.Embedding.forward -> ForgeEmbeddingFunction.apply(weight, indices)."""
-    from forge.kernels.embedding import ForgeEmbeddingFunction
-
-    def forward(input_ids):
-        return ForgeEmbeddingFunction.apply(module.weight, input_ids)
-    return forward
-
-
-def _make_rmsnorm_forward(module, config):
-    """{Qwen,Gemma,Llama}RMSNorm.forward -> apply_rmsnorm(x, weight, eps, offset, casting_mode).
-
-    Reads `offset` from config (0.0 for Qwen/Llama, 1.0 for Gemma) and picks
-    casting_mode by default ("gemma" when offset==1.0, else "llama"); both can
-    be overridden via the mapping config. Reads `eps` from `module.variance_epsilon`
-    (Qwen2/3) or falls back to `module.eps` (Gemma).
-    """
-    from forge.kernels.rmsnorm import apply_rmsnorm
-
-    offset = float(config.get("offset", 0.0))
-    casting_mode = config.get("casting_mode", "gemma" if offset == 1.0 else "llama")
-    eps = float(getattr(module, "variance_epsilon",
-                        getattr(module, "eps", 1e-6)))
-
-    def forward(hidden_states):
-        # Close over `module.weight` (not a copy) so LoRA updates flow live.
-        return apply_rmsnorm(hidden_states, module.weight, eps=eps,
-                             offset=offset, casting_mode=casting_mode)
-    return forward
-
-
-def _make_swiglu_forward(module, config):
-    """Qwen2/3 MLP.forward -> down_proj( swiglu(gate_proj(x), up_proj(x)) ).
-
-    The SwiGLU kernel only fuses `silu(gate) * up`; the three projections stay
-    as the module's own `nn.Linear` (or PEFT-wrapped LoRA Linear) so PEFT
-    adapters keep working through `forge.patch`. Calling the submodules
-    (`module.gate_proj(x)`) instead of using their `.weight` directly is what
-    lets adapter-wrapped Linears intercept the call.
-
-    Rejects non-`silu` activations at build time so a Gemma-style
-    `activation="gelu"` mapping fails loudly instead of silently producing
-    wrong outputs through a SiLU-only kernel. Gemma's GELU path lives in the
-    separate `geglu` kernel.
-    """
-    activation = config.get("activation", "silu")
-    if activation != "silu":
-        raise NotImplementedError(
-            f"forge.patch: swiglu kernel only supports activation='silu', "
-            f"got {activation!r}. Route this module to the 'geglu' kernel instead."
-        )
-
-    from forge.kernels.swiglu import swiglu
-
-    def forward(x):
-        gate = module.gate_proj(x)
-        up = module.up_proj(x)
-        return module.down_proj(swiglu(gate, up))
-    return forward
-
-
-def _make_not_implemented(kernel_name: str, why: str):
-    """Stub factory: forge.patch silently skips this kernel unless the caller
-    requests it explicitly via kernels=[...]. Then it raises so the gap is loud.
-    """
-    def factory(module, config):
-        def forward(*args, **kwargs):
-            raise NotImplementedError(
-                f"Forge kernel {kernel_name!r} is not implemented yet ({why}). "
-                f"Use forge.patch(model, kernels=[<built kernels only>]) to skip it."
-            )
-        return forward
-    factory.__forge_stub__ = True   # sentinel: patch loop skips unless explicit
-    factory.__forge_kernel_name__ = kernel_name
-    factory.__forge_reason__ = why
-    return factory
-
-
-_FORWARD_MAKERS: Dict[str, Callable] = {
-    # === Wired to real kernels ===
-    "embedding":     _make_embedding_forward,
-    "rmsnorm":       _make_rmsnorm_forward,
-    "swiglu":        _make_swiglu_forward,
-
-    # === Stubs — declared so the mapping shape matches the V1 plan; flipping
-    # to real is a one-line change when the team lands the kernel.
-    "geglu":         _make_not_implemented("geglu",         "H6 — GELU path (Gemma) not built"),
-    "cross_entropy": _make_not_implemented("cross_entropy", "H3 — model/loss forward interception not wired"),
-    "lora_qkv":      _make_not_implemented("lora_qkv",      "H5 — not built"),
-    "lora_mlp":      _make_not_implemented("lora_mlp",      "PEFT integration deferred per Day 2 scope"),
-}
 
 
 # ----------------------------------------------------------------------------
@@ -180,7 +101,10 @@ def _replace_forward(module, kernel_name: str, config: dict, originals: dict) ->
             f"Registered: {sorted(_FORWARD_MAKERS)}."
         )
     maker = _FORWARD_MAKERS[kernel_name]
-    new_fwd = maker(module, config)
+    try:
+        new_fwd = maker(module, config)
+    except ForgeSkipPatch:
+        return False
     originals[id(module)] = (module, module.forward)
     module.forward = new_fwd
     return True
@@ -276,22 +200,26 @@ def patch(model, kernels: Optional[List[str]] = None):
         cls_name = type(module).__name__
         if cls_name not in class_mapping:
             continue
-        kernel_name, config = class_mapping[cls_name]
+        patch_specs = class_mapping[cls_name]
+        if isinstance(patch_specs, tuple):
+            patch_specs = [patch_specs]
 
-        # Filter by `kernels` whitelist
-        if kernels is not None and kernel_name not in kernels:
-            continue
+        for kernel_name, config in patch_specs:
+            # Filter by `kernels` whitelist
+            if kernels is not None and kernel_name not in kernels:
+                continue
 
-        maker = _FORWARD_MAKERS.get(kernel_name)
-        if maker is None:
-            continue
-        # Stubs: silent skip when patching everything; pre-validation above already
-        # caught the explicit-whitelist case.
-        if getattr(maker, "__forge_stub__", False):
-            continue
+            maker = _FORWARD_MAKERS.get(kernel_name)
+            if maker is None:
+                continue
+            # Stubs: silent skip when patching everything; pre-validation above already
+            # caught the explicit-whitelist case.
+            if getattr(maker, "__forge_stub__", False):
+                continue
 
-        _replace_forward(module, kernel_name, config, originals)
-        patched_count[kernel_name] = patched_count.get(kernel_name, 0) + 1
+            if _replace_forward(module, kernel_name, config, originals):
+                patched_count[kernel_name] = patched_count.get(kernel_name, 0) + 1
+                break
 
     # --- module-level patches (RoPE et al.) ---
     selected_module_level = []
