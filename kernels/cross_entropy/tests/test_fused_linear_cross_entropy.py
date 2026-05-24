@@ -367,7 +367,10 @@ def test_fused_linear_cross_entropy_matches_liger_public_wrapper_when_available(
     torch.testing.assert_close(bias_forge.grad, bias_liger.grad, rtol=1e-5, atol=1e-5)
 
 
-def test_fused_linear_cross_entropy_rejects_none_reduction() -> None:
-    _, _, _, target, input_forge, weight_forge, _ = _make_case(5, 12, 19)
-    with pytest.raises(AssertionError, match="reduction='mean' or 'sum'"):
-        forge_fused_linear_cross_entropy(input_forge, weight_forge, target, reduction="none")
+def test_fused_linear_cross_entropy_none_reduction_matches_torch_forward() -> None:
+    input_ref, weight_ref, bias_ref, target, input_forge, weight_forge, bias_forge = _make_case(
+        5, 12, 19, bias=True
+    )
+    expected, _ = _loss_reference(input_ref, weight_ref, bias_ref, target, reduction="none")
+    actual = forge_fused_linear_cross_entropy(input_forge, weight_forge, target, bias=bias_forge, reduction="none")
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)

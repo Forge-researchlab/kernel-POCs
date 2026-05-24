@@ -54,7 +54,6 @@ def fused_linear_cross_entropy_forward(
     accumulates gradients for input/weight/bias. This mirrors Liger's fused
     linear CE algorithm while reusing Forge's CE v2 kernel.
     """
-    assert reduction != "none", "Forge fused linear CE supports reduction='mean' or 'sum' only."
     assert isinstance(return_z_loss, bool), f"return_z_loss must be True or False. Got: {return_z_loss}"
     assert isinstance(return_token_accuracy, bool), (
         f"return_token_accuracy must be True or False. Got: {return_token_accuracy}"
@@ -69,6 +68,9 @@ def fused_linear_cross_entropy_forward(
         raise ValueError(f"weight must be 2D (V, H); got shape={tuple(weight.shape)}")
     if target.ndim != 1:
         raise ValueError(f"target must be 1D (B*T,); got shape={tuple(target.shape)}")
+
+    device = _input.device
+    input_requires_grad = _input.requires_grad
 
     BT, H = _input.shape
     V, weight_h = weight.shape
@@ -107,15 +109,16 @@ def fused_linear_cross_entropy_forward(
     if bias is not None and bias.stride(-1) != 1:
         bias = bias.contiguous()
 
-    any_requires_grad = _input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
-    grad_input = torch.zeros_like(_input) if _input.requires_grad else None
-    if weight.requires_grad:
-        grad_weight = torch.zeros_like(weight, dtype=accum_dtype or weight.dtype)
+    grad_input = torch.zeros_like(_input, device=device)
+    if input_requires_grad:
+        if accum_dtype is None:
+            grad_weight = torch.zeros_like(weight, device=device) if weight.requires_grad else None
+            grad_bias = torch.zeros_like(bias, device=device) if bias is not None else None
+        else:
+            grad_weight = torch.zeros_like(weight, dtype=accum_dtype, device=device) if weight.requires_grad else None
+            grad_bias = torch.zeros_like(bias, dtype=accum_dtype, device=device) if bias is not None else None
     else:
         grad_weight = None
-    if bias is not None and bias.requires_grad:
-        grad_bias = torch.zeros_like(bias, dtype=accum_dtype or bias.dtype)
-    else:
         grad_bias = None
 
     loss_1d = torch.zeros(BT, dtype=torch.float32, device=_input.device)
@@ -190,7 +193,7 @@ def fused_linear_cross_entropy_forward(
             BLOCK_SIZE=block_size,
             HAS_WEIGHT=True if ce_weight is not None else False,
             HAS_SOFTCAPPING=True if softcap is not None else False,
-            HAS_GRADIENTS=any_requires_grad,
+            HAS_GRADIENTS=input_requires_grad,
             num_warps=32,
         )
 
@@ -205,16 +208,26 @@ def fused_linear_cross_entropy_forward(
         if use_token_scaling:
             grad_logits_chunk = grad_logits_chunk * scaling_factors.unsqueeze(-1)
 
-        if grad_input is not None:
+        if input_requires_grad:
             grad_input[start_idx:end_idx] = grad_logits_chunk @ weight
-        if grad_weight is not None:
-            grad_weight += torch.mm(grad_logits_chunk.t(), input_chunk).to(grad_weight.dtype)
-        if grad_bias is not None:
-            grad_bias += grad_logits_chunk.sum(dim=0).to(grad_bias.dtype)
+        if grad_weight is not None and input_requires_grad:
+            grad_weight += torch.mm(grad_logits_chunk.t(), input_chunk).float()
+        if grad_bias is not None and input_requires_grad:
+            torch.add(
+                input=grad_bias,
+                other=grad_logits_chunk.sum(dim=0),
+                out=grad_bias,
+                alpha=1.0,
+            )
 
-    loss = torch.sum(loss_1d)
-    z_loss = torch.sum(z_loss_1d) if return_z_loss else None
-    token_accuracy = torch.sum(token_accuracy_1d) / n_non_ignore if return_token_accuracy else None
+    if reduction == "none":
+        loss = loss_1d
+        z_loss = z_loss_1d if return_z_loss else None
+        token_accuracy = token_accuracy_1d if return_token_accuracy else None
+    else:
+        loss = torch.sum(loss_1d)
+        z_loss = torch.sum(z_loss_1d) if return_z_loss else None
+        token_accuracy = torch.sum(token_accuracy_1d) / n_non_ignore if return_token_accuracy else None
     predicted_tokens = predicted_tokens_1d if return_predicted_tokens else None
 
     grad_weight = grad_weight.to(weight.dtype) if grad_weight is not None else None
@@ -416,8 +429,8 @@ class ForgeFusedLinearCrossEntropyLoss(torch.nn.Module):
         assert (label_smoothing >= 0) and (label_smoothing <= 1), (
             f"label_smoothing must be between 0.0 and 1.0. Got: {label_smoothing}"
         )
-        assert reduction in {"mean", "sum"}, (
-            f"Forge fused linear CE supports reduction='mean' or 'sum'. Got: {reduction}"
+        assert reduction in {"mean", "sum", "none"}, (
+            f"Forge fused linear CE supports reduction='mean', 'sum', or 'none'. Got: {reduction}"
         )
         assert softcap is None or softcap > 0, f"softcap must greater than 0.0 or None. Got: {softcap}"
         self.ce_weight = ce_weight
