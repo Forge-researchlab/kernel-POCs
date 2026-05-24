@@ -46,7 +46,7 @@ SUITES = {
 
 
 def _candidate_unsloth_paths(user_path: str | None) -> list[Path]:
-    """Inputs: CLI path/env. Outputs: possible roots. Logic: support RunPod and local layouts."""
+    """Inputs: CLI path/env. Outputs: possible roots. Logic: support explicit and common layouts."""
     candidates = []
     if user_path:
         candidates.append(Path(user_path).expanduser())
@@ -61,7 +61,14 @@ def _candidate_unsloth_paths(user_path: str | None) -> list[Path]:
             Path("/workspace/unsloth"),
         ]
     )
-    return candidates
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            deduped.append(candidate)
+            seen.add(key)
+    return deduped
 
 
 def _unsloth_import_root(path: Path) -> Path | None:
@@ -78,6 +85,17 @@ def _load_unsloth(user_path: str | None) -> str:
     global geglu_approx_forward_kernel, geglu_exact_forward_kernel
 
     failures = []
+    if not user_path and not os.environ.get("UNSLOTH_SRC"):
+        try:
+            from unsloth.kernels.geglu import geglu_approx_forward_kernel as approx_kernel
+            from unsloth.kernels.geglu import geglu_exact_forward_kernel as exact_kernel
+        except Exception as exc:
+            failures.append(f"installed Python package: {type(exc).__name__}: {exc}")
+        else:
+            geglu_approx_forward_kernel = approx_kernel
+            geglu_exact_forward_kernel = exact_kernel
+            return "installed Python package"
+
     for candidate in _candidate_unsloth_paths(user_path):
         if not candidate.exists():
             failures.append(f"{candidate}: missing")
@@ -99,20 +117,23 @@ def _load_unsloth(user_path: str | None) -> str:
         geglu_exact_forward_kernel = exact_kernel
         return str(import_root)
 
-    try:
-        from unsloth.kernels.geglu import geglu_approx_forward_kernel as approx_kernel
-        from unsloth.kernels.geglu import geglu_exact_forward_kernel as exact_kernel
-    except Exception as exc:
-        searched = "\n  - ".join(failures) if failures else "no candidate paths"
-        raise RuntimeError(
-            "Could not import Unsloth GEGLU in the isolated benchmark process.\n"
-            "Clone Unsloth or point to an existing checkout with --unsloth-src /path/to/unsloth.\n"
-            f"Searched:\n  - {searched}"
-        ) from exc
+    if user_path or os.environ.get("UNSLOTH_SRC"):
+        try:
+            from unsloth.kernels.geglu import geglu_approx_forward_kernel as approx_kernel
+            from unsloth.kernels.geglu import geglu_exact_forward_kernel as exact_kernel
+        except Exception as exc:
+            failures.append(f"installed Python package: {type(exc).__name__}: {exc}")
+        else:
+            geglu_approx_forward_kernel = approx_kernel
+            geglu_exact_forward_kernel = exact_kernel
+            return "installed Python package"
 
-    geglu_approx_forward_kernel = approx_kernel
-    geglu_exact_forward_kernel = exact_kernel
-    return "installed Python package"
+    searched = "\n  - ".join(failures) if failures else "no candidate paths"
+    raise RuntimeError(
+        "Could not import Unsloth GEGLU in the isolated benchmark process.\n"
+        "Install Unsloth in this environment or point to a checkout with --unsloth-src /path/to/unsloth.\n"
+        f"Searched:\n  - {searched}"
+    )
 
 
 def _check_cuda() -> None:

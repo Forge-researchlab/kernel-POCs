@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 
@@ -42,6 +43,44 @@ def _check_approximate(approximate: str) -> bool:
     if approximate not in {"tanh", "none"}:
         raise ValueError(f"approximate must be 'tanh' or 'none', got {approximate!r}")
     return approximate == "tanh"
+
+
+def _check_linear_weight(
+    name: str,
+    weight: torch.Tensor,
+    in_features: int,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
+) -> None:
+    if weight.dim() != 2:
+        raise ValueError(f"{name} must be 2D [out_features, in_features], got shape {tuple(weight.shape)}")
+    if weight.shape[1] != in_features:
+        raise ValueError(f"{name} input features {weight.shape[1]} do not match x last dimension {in_features}")
+    if not weight.is_floating_point():
+        raise TypeError(f"{name} must be a floating point tensor")
+    if device is not None and weight.device != device:
+        raise ValueError(f"{name} must be on device {device}, got {weight.device}")
+    if dtype is not None and weight.dtype != dtype:
+        raise TypeError(f"{name} must have dtype {dtype}, got {weight.dtype}")
+
+
+def _check_optional_bias(
+    name: str,
+    bias: torch.Tensor | None,
+    out_features: int,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
+) -> None:
+    if bias is None:
+        return
+    if bias.dim() != 1 or bias.shape[0] != out_features:
+        raise ValueError(f"{name} must have shape [{out_features}], got {tuple(bias.shape)}")
+    if not bias.is_floating_point():
+        raise TypeError(f"{name} must be a floating point tensor")
+    if device is not None and bias.device != device:
+        raise ValueError(f"{name} must be on device {device}, got {bias.device}")
+    if dtype is not None and bias.dtype != dtype:
+        raise TypeError(f"{name} must have dtype {dtype}, got {bias.dtype}")
 
 
 def _uses_long_indexing(num_elements: int) -> bool:
@@ -237,6 +276,111 @@ def torch_geglu_packed_reference(
     _check_packed_input(gate_up)
     gate, up = gate_up.chunk(2, dim=-1)
     return torch_geglu_reference(gate, up, approximate)
+
+
+def pack_geglu_gate_up_weight(gate_weight: torch.Tensor, up_weight: torch.Tensor) -> torch.Tensor:
+    """Inputs: gate/up linear weights. Outputs: packed [2I, H] weight. Logic: enable one gate+up GEMM."""
+    if gate_weight.shape != up_weight.shape:
+        raise ValueError(f"gate_weight and up_weight must have the same shape, got {gate_weight.shape} and {up_weight.shape}")
+    if gate_weight.device != up_weight.device:
+        raise ValueError("gate_weight and up_weight must be on the same device")
+    if gate_weight.dtype != up_weight.dtype:
+        raise TypeError(f"gate_weight and up_weight must have the same dtype, got {gate_weight.dtype} and {up_weight.dtype}")
+    if gate_weight.dim() != 2:
+        raise ValueError(f"gate_weight and up_weight must be 2D, got {gate_weight.dim()}D")
+    return torch.cat([gate_weight, up_weight], dim=0).contiguous()
+
+
+def pack_geglu_gate_up_bias(
+    gate_bias: torch.Tensor | None,
+    up_bias: torch.Tensor | None,
+) -> torch.Tensor | None:
+    """Inputs: optional gate/up biases. Outputs: packed bias or None. Logic: mirror packed weight layout."""
+    if gate_bias is None and up_bias is None:
+        return None
+    if gate_bias is None or up_bias is None:
+        raise ValueError("gate_bias and up_bias must either both be None or both be tensors for packed gate+up")
+    if gate_bias.dim() != 1 or up_bias.dim() != 1:
+        raise ValueError("gate_bias and up_bias must be 1D tensors")
+    if gate_bias.shape != up_bias.shape:
+        raise ValueError(f"gate_bias and up_bias must have the same shape, got {gate_bias.shape} and {up_bias.shape}")
+    if gate_bias.device != up_bias.device:
+        raise ValueError("gate_bias and up_bias must be on the same device")
+    if gate_bias.dtype != up_bias.dtype:
+        raise TypeError(f"gate_bias and up_bias must have the same dtype, got {gate_bias.dtype} and {up_bias.dtype}")
+    return torch.cat([gate_bias, up_bias], dim=0).contiguous()
+
+
+def torch_geglu_mlp_reference(
+    x: torch.Tensor,
+    gate_weight: torch.Tensor,
+    up_weight: torch.Tensor,
+    down_weight: torch.Tensor,
+    gate_bias: torch.Tensor | None = None,
+    up_bias: torch.Tensor | None = None,
+    down_bias: torch.Tensor | None = None,
+    approximate: str = "tanh",
+) -> torch.Tensor:
+    """Inputs: x and separate MLP weights. Outputs: PyTorch GEGLU MLP. Logic: correctness baseline."""
+    _check_approximate(approximate)
+    gate = F.linear(x, gate_weight, gate_bias)
+    up = F.linear(x, up_weight, up_bias)
+    hidden = torch_geglu_reference(gate, up, approximate)
+    return F.linear(hidden, down_weight, down_bias)
+
+
+def geglu_mlp(
+    x: torch.Tensor,
+    down_weight: torch.Tensor,
+    gate_weight: torch.Tensor | None = None,
+    up_weight: torch.Tensor | None = None,
+    packed_gate_up_weight: torch.Tensor | None = None,
+    gate_bias: torch.Tensor | None = None,
+    up_bias: torch.Tensor | None = None,
+    packed_gate_up_bias: torch.Tensor | None = None,
+    down_bias: torch.Tensor | None = None,
+    approximate: str = "tanh",
+    preserve_inputs: bool = False,
+) -> torch.Tensor:
+    """Inputs: x and MLP weights. Outputs: down(gelu(gate) * up). Logic: use packed gate+up when provided."""
+    _check_approximate(approximate)
+    if x.dim() < 2:
+        raise ValueError(f"x must have at least 2 dimensions, got shape {tuple(x.shape)}")
+    if not x.is_floating_point():
+        raise TypeError("x must be a floating point tensor")
+
+    in_features = x.shape[-1]
+    if packed_gate_up_weight is not None:
+        if gate_weight is not None or up_weight is not None:
+            raise ValueError("provide either packed_gate_up_weight or separate gate_weight/up_weight, not both")
+        _check_linear_weight("packed_gate_up_weight", packed_gate_up_weight, in_features, x.device, x.dtype)
+        if packed_gate_up_weight.shape[0] % 2 != 0:
+            raise ValueError(f"packed_gate_up_weight output dimension must be even, got {packed_gate_up_weight.shape[0]}")
+        intermediate = packed_gate_up_weight.shape[0] // 2
+        _check_optional_bias("packed_gate_up_bias", packed_gate_up_bias, packed_gate_up_weight.shape[0], x.device, x.dtype)
+        if gate_bias is not None or up_bias is not None:
+            raise ValueError("use packed_gate_up_bias with packed_gate_up_weight")
+        gate_up = F.linear(x, packed_gate_up_weight, packed_gate_up_bias)
+        hidden = geglu_packed(gate_up, approximate=approximate, preserve_inputs=preserve_inputs)
+    else:
+        if gate_weight is None or up_weight is None:
+            raise ValueError("separate path requires gate_weight and up_weight")
+        _check_linear_weight("gate_weight", gate_weight, in_features, x.device, x.dtype)
+        _check_linear_weight("up_weight", up_weight, in_features, x.device, x.dtype)
+        if gate_weight.shape != up_weight.shape:
+            raise ValueError(f"gate_weight and up_weight must have the same shape, got {gate_weight.shape} and {up_weight.shape}")
+        intermediate = gate_weight.shape[0]
+        _check_optional_bias("gate_bias", gate_bias, intermediate, x.device, x.dtype)
+        _check_optional_bias("up_bias", up_bias, intermediate, x.device, x.dtype)
+        if packed_gate_up_bias is not None:
+            raise ValueError("packed_gate_up_bias requires packed_gate_up_weight")
+        gate = F.linear(x, gate_weight, gate_bias)
+        up = F.linear(x, up_weight, up_bias)
+        hidden = geglu(gate, up, approximate=approximate, preserve_inputs=preserve_inputs)
+
+    _check_linear_weight("down_weight", down_weight, intermediate, x.device, x.dtype)
+    _check_optional_bias("down_bias", down_bias, down_weight.shape[0], x.device, x.dtype)
+    return F.linear(hidden, down_weight, down_bias)
 
 
 def geglu_forward(

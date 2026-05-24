@@ -1,26 +1,46 @@
 # GEGLU Research
 
-Stage: Generate checkpoint  
+Stage: Generate checkpoint, post A100 smoke
 Date: 2026-05-24  
 Local repo state: `kernel-POCs` branch `main` at `c6f69c3`; `Liger-Kernel` refreshed to `bfaaef8`; `unsloth` refreshed to `56e9046b`.
 
 ## Recommendation
 
-Stage 2 implements Forge GEGLU as a flattened standalone activation primitive:
+Stage 2 now carries two surfaces:
 
-1. Standalone `geglu(gate, up, approximate="tanh" | "none", preserve_inputs=False)` with a CPU PyTorch fallback.
-2. Packed `geglu_packed(gate_up, approximate=..., preserve_inputs=False)` for `[..., 2 * hidden]`.
-3. A 1D flattened Triton launch over total elements rather than Liger's one-row-per-program launch.
-4. Both forward and backward, with exact and tanh GELU variants.
-5. Benchmarks against PyTorch, Liger `LigerGELUMulFunction`, and Unsloth's exact/tanh GEGLU kernels where importable.
+1. Standalone `geglu(gate, up, approximate="tanh" | "none", preserve_inputs=False)` as the correctness/memory control primitive.
+2. Packed `geglu_packed(gate_up, approximate=..., preserve_inputs=False)` for `[..., 2 * intermediate]`.
+3. `geglu_mlp(...)`, a Forge-facing MLP helper that can use either separate gate/up weights or one packed gate+up weight.
+4. A 1D flattened Triton launch over total elements rather than Liger's one-row-per-program launch.
+5. Both forward and backward for the activation primitive, with exact and tanh GELU variants.
 
-The intended delta is not merely "GEGLU exists in Forge." It is:
+The current A100 evidence changes the main delta:
 
-- Beat or at least expose a measurable speed gap versus Liger on odd and large intermediate sizes by avoiding per-row power-of-two padding.
-- Broaden support beyond Liger by adding exact GELU, packed layout, no hidden-size block cap for ordinary flattened indexing, and a safe `preserve_inputs` mode.
-- Keep the activation primitive modular so it can later feed a fused LoRA MLP or tiled MLP experiment.
+- Standalone activation mostly wins memory and support surface, not speed.
+- Packed gate+up MLP is the performance path. It wins most clearly for small-token/decode-like and odd-intermediate shapes.
+- Forge's delta over Liger is packed gate+up projection plus packed GEGLU, exact/tanh support, no ordinary row block cap, and a modular API.
+- Forge's delta over Unsloth is not proven on raw GEGLU latency yet because Unsloth's package import failed in the RunPod environment. Public Unsloth data is end-to-end training, not comparable GEGLU microbench timing.
 
 Dense full-MLP fusion is tracked as a later Tier 3 experiment. It can reduce activation materialization, but in normal training the gate/up pre-activations are still needed for backward unless we intentionally recompute them. A first-pass fused dense GEMM is likely to lose to cuBLAS on large Gemma shapes unless it targets a specific low-batch, small-rank LoRA, MoE, quantized, or long-sequence memory regime.
+
+## A100 Smoke Evidence
+
+Device: NVIDIA A100-SXM4-80GB, dtype bf16, GELU tanh approximation.
+
+Activation-only smoke:
+
+- `B1 S256 H11008`: `forge_packed_fast full` was `0.226 ms` vs PyTorch packed/full `0.365 ms` and Liger `0.324 ms`; memory was `43.0 MiB` vs PyTorch `80.6 MiB`.
+- `B2 S7 H11009`: Forge activation saved memory, but Liger/PyTorch remained competitive on full latency.
+- `B1 S4 H65537`: Forge handled the shape that Liger skipped due row block limit; speed was not the primary advantage.
+
+Gate+up MLP smoke:
+
+- `B2 S7 H4096 I11009`: `packed_forge mlp_full` was `1.005 ms` vs Liger `1.536 ms` and `separate_forge` `1.526 ms`.
+- `B2 S7 H4096 I11009`: `packed_forge gateup_forward` was `0.188 ms` vs Liger `0.457 ms`.
+- `B1 S32 H4096 I11008`: `packed_forge mlp_full` was `0.706 ms` vs Liger `0.792 ms` and `separate_forge` `0.760 ms`.
+- `B1 S128 H1024 I4096`: packed Torch stayed strongest for some full modes; this is a control shape, not the main target.
+
+Conclusion: carry forward packed gate+up MLP and use separate/activation-only paths as controls.
 
 ## Operation
 
