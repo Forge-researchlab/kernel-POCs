@@ -80,6 +80,42 @@ def _make_embedding_forward(module, config):
     return forward
 
 
+def _make_rmsnorm_forward(module, config):
+    """Qwen/Gemma RMSNorm.forward -> ForgeRMSNormFunction.
+
+    Closes over the live module weight, so PEFT/FSDP updates remain visible.
+    Qwen uses offset=0.0; Gemma-style RMSNorm can use offset=1.0.
+    """
+    from forge.kernels.rmsnorm import apply_rmsnorm
+
+    eps = getattr(module, "variance_epsilon", None)
+    if eps is None:
+        eps = getattr(module, "eps", 1e-6)
+    offset = float(config.get("offset", 0.0))
+
+    def forward(hidden_states):
+        return apply_rmsnorm(hidden_states, module.weight, eps=eps, offset=offset)
+    return forward
+
+
+def _make_swiglu_forward(module, config):
+    """Qwen MLP.forward -> down_proj(Forge SwiGLU(gate_proj(x), up_proj(x)))."""
+    from forge.kernels.swiglu import swiglu
+
+    activation = config.get("activation", "silu")
+    if activation not in ("silu", "swish"):
+        raise NotImplementedError(
+            f"Forge SwiGLU patch only supports SiLU/Swish today; got activation={activation!r}."
+        )
+
+    def forward(x):
+        gate = module.gate_proj(x)
+        up = module.up_proj(x)
+        fused = swiglu(gate, up, preserve_inputs=True)
+        return module.down_proj(fused)
+    return forward
+
+
 def _make_not_implemented(kernel_name: str, why: str):
     """Stub factory: forge.patch silently skips this kernel unless the caller
     requests it explicitly via kernels=[...]. Then it raises so the gap is loud.
@@ -100,13 +136,13 @@ def _make_not_implemented(kernel_name: str, why: str):
 _FORWARD_MAKERS: Dict[str, Callable] = {
     # === Wired to real kernels ===
     "embedding":     _make_embedding_forward,
+    "rmsnorm":       _make_rmsnorm_forward,
+    "swiglu":        _make_swiglu_forward,
 
     # === Stubs — declared so the mapping shape matches the V1 plan; flipping
     # to real is a one-line change when the team lands the kernel.
-    "rmsnorm":       _make_not_implemented("rmsnorm",       "H7 port — RMSNorm POC not in repo"),
-    "swiglu":        _make_not_implemented("swiglu",        "H1 — SiLU path not built"),
     "geglu":         _make_not_implemented("geglu",         "H6 — GELU path (Gemma) not built"),
-    "cross_entropy": _make_not_implemented("cross_entropy", "H3 — not built"),
+    "cross_entropy": _make_not_implemented("cross_entropy", "H3 — model/loss forward interception not wired"),
     "lora_qkv":      _make_not_implemented("lora_qkv",      "H5 — not built"),
     "lora_mlp":      _make_not_implemented("lora_mlp",      "PEFT integration deferred per Day 2 scope"),
 }
@@ -242,11 +278,16 @@ def patch(model, kernels: Optional[List[str]] = None):
         patched_count[kernel_name] = patched_count.get(kernel_name, 0) + 1
 
     # --- module-level patches (RoPE et al.) ---
-    selected_module_level = [
-        (module_path, attr_name, replacement)
-        for kernel_name, (module_path, attr_name, replacement) in module_level_patches.items()
-        if kernels is None or kernel_name in kernels
-    ]
+    selected_module_level = []
+    for kernel_name, patch_spec in module_level_patches.items():
+        if kernels is not None and kernel_name not in kernels:
+            continue
+        # A kernel can patch more than one transformers module path (e.g. qwen2
+        # and qwen3 have separate modeling modules in newer transformers).
+        if isinstance(patch_spec, tuple):
+            selected_module_level.append(patch_spec)
+        else:
+            selected_module_level.extend(patch_spec)
     _apply_module_level_patches(selected_module_level, originals)
 
     model._forge_originals = originals

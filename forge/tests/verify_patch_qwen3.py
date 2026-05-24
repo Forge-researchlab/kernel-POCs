@@ -1,10 +1,12 @@
-"""Real-model verification for forge.patch on Qwen2.5-0.5B.
+"""Real-model verification for forge.patch on Qwen2.5/Qwen3-style models.
 
 Runs the bisection pattern from design_details.html#wiring:
 
     baseline -> patch(kernels=["embedding"]) -> compare
-    baseline -> patch(kernels=["rope"])      -> compare    # the brittle one
-    baseline -> patch()                       -> compare
+    baseline -> patch(kernels=["rmsnorm"])   -> compare
+    baseline -> patch(kernels=["swiglu"])    -> compare
+    baseline -> patch(kernels=["rope"])      -> compare    # brittle cos/sin contract
+    baseline -> patch()                       -> compare    # all wired kernels
     baseline -> unpatch                       -> must match baseline EXACTLY
 
 Each comparison reports:
@@ -38,7 +40,7 @@ def _summary(out_orig, out_new, label):
     shape_ok = (out_new.shape == out_orig.shape)
     max_diff = (out_new - out_orig).abs().max().item()
     flat_orig = out_orig.float().flatten()
-    flat_new  = out_new.float().flatten()
+    flat_new = out_new.float().flatten()
     cos = float(
         (flat_orig @ flat_new) /
         (flat_orig.norm() * flat_new.norm() + 1e-12)
@@ -46,6 +48,33 @@ def _summary(out_orig, out_new, label):
     print(f"  [{label}] shape={tuple(out_new.shape)} "
           f"NaN={nan_count} max_diff={max_diff:.4e} cos_sim={cos:.6f}")
     return nan_count == 0 and shape_ok and max_diff < 1.0 and cos > 0.999
+
+
+def _run_patch_case(model, ids, out_orig, label, kernels):
+    import forge
+
+    print(f"\nforge.patch(model, kernels={kernels!r}) ...")
+    try:
+        forge.patch(model, kernels=kernels)
+        print(f"  patched_counts = {model._forge_patched_counts}")
+        if kernels == ["rope"]:
+            import transformers.models.qwen2.modeling_qwen2 as qwen2_mod
+            print(f"  qwen2.apply_rotary_pos_emb = {qwen2_mod.apply_rotary_pos_emb.__name__}")
+            try:
+                import transformers.models.qwen3.modeling_qwen3 as qwen3_mod
+                print(f"  qwen3.apply_rotary_pos_emb = {qwen3_mod.apply_rotary_pos_emb.__name__}")
+            except Exception:
+                pass
+        with __import__("torch").no_grad():
+            out_new = model(ids).logits
+        return _summary(out_orig, out_new, label)
+    except Exception as e:
+        print(f"  EXCEPTION: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        if getattr(model, "_forge_patched", False):
+            forge.unpatch(model)
 
 
 def main():
@@ -94,52 +123,25 @@ def main():
     ids = torch.randint(0, model.config.vocab_size, (args.batch, args.seq_len), device=device)
 
     # === Baseline ===
-    print("\n[1/5] Baseline (unpatched) forward ...")
+    print("\n[1/7] Baseline (unpatched) forward ...")
     with torch.no_grad():
         out_orig = model(ids).logits.clone()
     print(f"  baseline logits: shape={tuple(out_orig.shape)} "
           f"dtype={out_orig.dtype} NaN={int(out_orig.isnan().sum())}")
 
     results = {}
+    cases = [
+        ("embedding", ["embedding"]),
+        ("rmsnorm", ["rmsnorm"]),
+        ("swiglu", ["swiglu"]),
+        ("rope", ["rope"]),
+    ]
+    for step, (label, kernels) in enumerate(cases, start=2):
+        print(f"\n[{step}/7] {label} only")
+        results[label] = _run_patch_case(model, ids, out_orig, label, kernels)
 
-    # === Embedding only ===
-    print("\n[2/5] forge.patch(model, kernels=['embedding']) ...")
-    try:
-        forge.patch(model, kernels=["embedding"])
-        print(f"  patched_counts = {model._forge_patched_counts}")
-        with torch.no_grad():
-            out_emb = model(ids).logits
-        results["embedding"] = _summary(out_orig, out_emb, "embedding")
-    except Exception as e:
-        print(f"  EXCEPTION: {type(e).__name__}: {e}")
-        traceback.print_exc()
-        results["embedding"] = False
-    finally:
-        if getattr(model, "_forge_patched", False):
-            forge.unpatch(model)
-
-    # === RoPE only (the brittle one — verifies the cos/sin shape contract) ===
-    print("\n[3/5] forge.patch(model, kernels=['rope']) ...")
-    try:
-        forge.patch(model, kernels=["rope"])
-        print(f"  patched_counts = {model._forge_patched_counts}  "
-              f"(module-level RoPE swap active)")
-        # Confirm the swap actually happened
-        import transformers.models.qwen2.modeling_qwen2 as qwen2_mod
-        print(f"  apply_rotary_pos_emb = {qwen2_mod.apply_rotary_pos_emb.__name__}")
-        with torch.no_grad():
-            out_rope = model(ids).logits
-        results["rope"] = _summary(out_orig, out_rope, "rope")
-    except Exception as e:
-        print(f"  EXCEPTION: {type(e).__name__}: {e}")
-        traceback.print_exc()
-        results["rope"] = False
-    finally:
-        if getattr(model, "_forge_patched", False):
-            forge.unpatch(model)
-
-    # === Both (default: everything that's wired) ===
-    print("\n[4/5] forge.patch(model)  (all wired kernels) ...")
+    # === All wired kernels ===
+    print("\n[6/7] forge.patch(model)  (all wired kernels) ...")
     try:
         forge.patch(model)
         print(f"  patched_counts = {model._forge_patched_counts}")
@@ -155,7 +157,7 @@ def main():
             forge.unpatch(model)
 
     # === Unpatch must restore EXACTLY ===
-    print("\n[5/5] unpatch restoration check ...")
+    print("\n[7/7] unpatch restoration check ...")
     with torch.no_grad():
         out_restored = model(ids).logits
     exact_restore = bool(torch.equal(out_restored, out_orig))

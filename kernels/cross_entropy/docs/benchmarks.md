@@ -17,11 +17,34 @@ uv run python kernels/cross_entropy/benchmarks/bench_cross_entropy.py \
   --save kernels/cross_entropy/benchmarks/results/
 ```
 
+## Fused Linear + CE Standard Sweep
+
+```bash
+uv run python kernels/cross_entropy/benchmarks/bench_fused_linear_cross_entropy.py \
+  --bt 1024 2048 4096 8192 \
+  --hidden 4096 \
+  --vocab 128256 \
+  --dtype bf16 \
+  --providers torch forge liger \
+  --save kernels/cross_entropy/benchmarks/results/
+```
+
 ## Smoke Sweep
 
 ```bash
 uv run python kernels/cross_entropy/benchmarks/bench_cross_entropy.py \
   --bt 128 \
+  --vocab 32000 \
+  --dtype bf16 \
+  --providers torch forge liger
+```
+
+## Fused Linear + CE Smoke Sweep
+
+```bash
+uv run python kernels/cross_entropy/benchmarks/bench_fused_linear_cross_entropy.py \
+  --bt 128 \
+  --hidden 1024 \
   --vocab 32000 \
   --dtype bf16 \
   --providers torch forge liger
@@ -34,7 +57,7 @@ uv run python kernels/cross_entropy/benchmarks/bench_cross_entropy.py \
 - `latency_vs_forge`: provider median latency divided by Forge median latency
 - `memory_vs_forge`: provider peak memory divided by Forge peak memory
 
-The terminal output keeps the raw Forge, Torch, and Liger values visible, split by `BT`, and shows `Torch/Forge` plus `Liger/Forge` comparison columns.
+The terminal output keeps the raw Forge, Torch, and Liger values visible, split by `BT` (and by `H`/`V` for fused linear + CE), and shows `Torch/Forge` plus `Liger/Forge` comparison columns.
 
 The benchmark excludes input tensor creation from the timed region. Peak memory also excludes the base input tensor allocation.
 

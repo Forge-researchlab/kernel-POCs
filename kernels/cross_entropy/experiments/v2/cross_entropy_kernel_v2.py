@@ -8,7 +8,7 @@ forward computes the loss and, when gradients are required, writes
 dLoss/dLogits back into the logits buffer so backward can avoid materializing a
 separate softmax/log-softmax tensor.
 
-Supported features match Liger's public CE surface:
+Supported standalone CE features match Liger's public CE surface:
 - class weights
 - ignore_index
 - label smoothing

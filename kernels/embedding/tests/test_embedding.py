@@ -45,7 +45,7 @@ class TestForward:
         weight = torch.randn(vocab_size, emb_dim, device=DEVICE, dtype=dtype)
         indices = torch.randint(0, vocab_size, (4, 128), device=DEVICE)
 
-        expected = torch.nn.functional.embedding(weight, indices)
+        expected = torch.nn.functional.embedding(indices, weight)
         result = ForgeEmbeddingFunction.apply(weight.clone(), indices)
 
         rtol = 1e-3 if dtype == torch.bfloat16 else 1e-5
@@ -72,7 +72,7 @@ class TestForward:
         weight = torch.randn(1000, 256, device=DEVICE)
         indices = torch.randint(0, 1000, (8, 64), device=DEVICE)
 
-        expected = torch.nn.functional.embedding(weight, indices)
+        expected = torch.nn.functional.embedding(indices, weight)
         result = ForgeEmbeddingFunction.apply(weight, indices)
         torch.testing.assert_close(result, expected)
 
@@ -87,7 +87,7 @@ class TestBackward:
         weight_forge = weight_ref.detach().clone().requires_grad_(True)
         indices = torch.randint(0, vocab_size, (4, 128), device=DEVICE)
 
-        out_ref = torch.nn.functional.embedding(weight_ref, indices)
+        out_ref = torch.nn.functional.embedding(indices, weight_ref)
         out_ref.sum().backward()
 
         out_forge = ForgeEmbeddingFunction.apply(weight_forge, indices)
@@ -110,7 +110,7 @@ class TestBackward:
         weight_ref = torch.randn(vocab_size, emb_dim, device=DEVICE, requires_grad=True)
         weight_forge = weight_ref.detach().clone().requires_grad_(True)
 
-        out_ref = torch.nn.functional.embedding(weight_ref, indices)
+        out_ref = torch.nn.functional.embedding(indices, weight_ref)
         out_ref.sum().backward()
 
         out_forge = ForgeEmbeddingFunction.apply(weight_forge, indices)
@@ -126,7 +126,7 @@ class TestBackward:
         weight_ref = torch.randn(vocab_size, emb_dim, device=DEVICE, requires_grad=True)
         weight_forge = weight_ref.detach().clone().requires_grad_(True)
 
-        out_ref = torch.nn.functional.embedding(weight_ref, indices)
+        out_ref = torch.nn.functional.embedding(indices, weight_ref)
         out_ref.sum().backward()
 
         out_forge = ForgeEmbeddingFunction.apply(weight_forge, indices)
@@ -142,7 +142,7 @@ class TestBackward:
         weight_ref = torch.randn(vocab_size, emb_dim, device=DEVICE, requires_grad=True)
         weight_forge = weight_ref.detach().clone().requires_grad_(True)
 
-        out_ref = torch.nn.functional.embedding(weight_ref, indices)
+        out_ref = torch.nn.functional.embedding(indices, weight_ref)
         out_ref.sum().backward()
 
         out_forge = ForgeEmbeddingFunction.apply(weight_forge, indices)

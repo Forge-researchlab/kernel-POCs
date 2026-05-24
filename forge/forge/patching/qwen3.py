@@ -17,8 +17,8 @@ detect this by running patch(model) and confirming forge._forge_originals
 contains the expected number of entries.
 
 Must-ship for the hackathon demo (priority items 3-5 of the scope ladder):
-    Qwen3RMSNorm  -> rmsnorm  (STUB — H7 port not done)
-    Qwen3MLP      -> swiglu   (STUB — H1 not done)
+    Qwen3RMSNorm  -> rmsnorm  ✓ wired
+    Qwen3MLP      -> swiglu   ✓ wired
     Embedding     -> embedding ✓ wired
 Stretch (originally deferred — but our RoPE V3 is the strongest kernel, so
 we wire it via the module-level patch table):
@@ -45,12 +45,16 @@ QWEN3_MAPPING = {
 # kernel_name -> (module_path, attr_name, replacement_callable)
 # These are restored on unpatch().
 QWEN3_MODULE_LEVEL_PATCHES = {
-    "rope": (
-        "transformers.models.qwen2.modeling_qwen2",
-        "apply_rotary_pos_emb",
-        forge_apply_rotary_pos_emb,
-    ),
-    # Qwen3 (when transformers ships a dedicated qwen3 module path) — add another
-    # entry here if model_type=="qwen3" picks up a separate module. For Qwen2.5
-    # and current Qwen3 builds, modeling_qwen2 is the shared call site.
+    "rope": [
+        (
+            "transformers.models.qwen2.modeling_qwen2",
+            "apply_rotary_pos_emb",
+            forge_apply_rotary_pos_emb,
+        ),
+        (
+            "transformers.models.qwen3.modeling_qwen3",
+            "apply_rotary_pos_emb",
+            forge_apply_rotary_pos_emb,
+        ),
+    ],
 }

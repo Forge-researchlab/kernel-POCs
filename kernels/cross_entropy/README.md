@@ -10,9 +10,11 @@ cross_entropy/
 ├── experiments/v{N}/      # Versioned Forge kernel experiments
 ├── benchmarks/
 │   ├── bench_cross_entropy.py
+│   ├── bench_fused_linear_cross_entropy.py
 │   └── results/
 ├── tests/
-│   └── test_cross_entropy.py
+│   ├── test_cross_entropy.py
+│   └── test_fused_linear_cross_entropy.py
 └── docs/
     └── benchmarks.md
 ```
@@ -26,6 +28,10 @@ uv run pytest kernels/cross_entropy/tests/test_cross_entropy.py -v
 # Small smoke benchmark
 uv run python kernels/cross_entropy/benchmarks/bench_cross_entropy.py \
   --bt 128 --vocab 32000 --dtype bf16 --providers torch forge liger
+
+# Small fused linear + CE smoke benchmark
+uv run python kernels/cross_entropy/benchmarks/bench_fused_linear_cross_entropy.py \
+  --bt 128 --hidden 1024 --vocab 32000 --dtype bf16 --providers torch forge liger
 
 # LLaMA-3-style sweep
 uv run python kernels/cross_entropy/benchmarks/bench_cross_entropy.py \
@@ -43,7 +49,13 @@ uv run python kernels/cross_entropy/benchmarks/bench_cross_entropy.py \
 - `forge`: current experiment under `experiments/v2/`
 - `liger`: `liger_kernel.transformers.cross_entropy.LigerCrossEntropyLoss`
 
-`experiments/v1/` is the first core Triton path. `experiments/v2/` is the current benchmark target and mirrors the full Liger cross entropy surface: class weights, z-loss, softcap, token accuracy, predicted tokens, label smoothing, ignore index, and all reductions.
+For the fused benchmark:
+
+- `torch`: `torch.nn.functional.cross_entropy(torch.nn.functional.linear(input, weight, bias), target)`
+- `forge`: `experiments/v2/forge_fused_linear_cross_entropy`
+- `liger`: `liger_kernel.transformers.fused_linear_cross_entropy.LigerFusedLinearCrossEntropyLoss`
+
+`experiments/v1/` is the first core Triton path. `experiments/v2/` is the current benchmark target and mirrors the full Liger cross entropy surface: class weights, z-loss, softcap, token accuracy, predicted tokens, label smoothing, ignore index, and all reductions. It also contains `fused_linear_cross_entropy.py`, which reuses the CE v2 Triton kernel to compute chunked linear+CE without materializing full `B*T*V` logits.
 
 The benchmark prints one summary section per `BT` value with raw Forge, Torch, and Liger numbers. The comparison columns use Forge as the target: `Torch/Forge` and `Liger/Forge`. Values above `1.00x` mean Forge is better; values below `1.00x` mean Forge is worse. CSV output is optional via `--save`.
 
