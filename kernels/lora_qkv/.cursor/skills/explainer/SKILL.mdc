@@ -64,22 +64,22 @@ finding or achievement?}
 
 ## Performance Dashboard
 
-### Forward Pass (primary benchmark config)
+### Forward Pass — Time & Memory (primary benchmark config)
 
-| Kernel | Time (ms) | vs Unsloth | vs PyTorch | Launches | Notes |
-|--------|-----------|------------|------------|----------|-------|
-| PyTorch naive | X.XX | X.XXx | 1.00x | 9+ | Baseline |
-| Unsloth matmul_lora × 3 | X.XX | 1.00x | X.XXx | 9 | Primary target |
-| Our v{N} | X.XX | X.XXx | X.XXx | N | Current best |
+| Kernel | Time (ms) | Peak Mem (MB) | vs Unsloth (time) | vs Unsloth (mem) | Launches | X reads |
+|--------|-----------|--------------|-------------------|-----------------|----------|---------|
+| PyTorch naive | X.XX | XXX | X.XXx | X.XXx | 9+ | 6× |
+| Unsloth (addmm\_) | X.XX | XXX | 1.00x | 1.00x | 9 | 6× |
+| Our v{N} | X.XX | XXX | X.XXx | X.XXx | N | N× |
 
-### Performance Across Ranks
+### Performance Across Ranks (time + memory)
 
-| Rank | Unsloth (ms) | Ours (ms) | Speedup | Notes |
-|------|-------------|-----------|---------|-------|
-| 8 | — | — | — | |
-| 16 | — | — | — | Primary config |
-| 32 | — | — | — | |
-| 64 | — | — | — | |
+| Rank | Unsloth (ms) | Ours (ms) | Speedup | Unsloth Mem (MB) | Ours Mem (MB) | Mem savings |
+|------|-------------|-----------|---------|-----------------|--------------|-------------|
+| 8 | — | — | — | — | — | — |
+| 16 | — | — | — | — | — | — |
+| 32 | — | — | — | — | — | — |
+| 64 | — | — | — | — | — | — |
 
 ### Performance History
 

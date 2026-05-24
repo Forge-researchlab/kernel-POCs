@@ -30,6 +30,15 @@ from reference.unsloth_baseline import (
 from experiments.v1.lora_mlp_kernel_v1 import fused_lora_matmul
 from experiments.v2.lora_mlp_kernel_v2 import fused_gate_up_swiglu, lora_mlp_v2, LoRAMLPv2
 from experiments.v3.lora_mlp_kernel_v3 import lora_mlp_v3, fused_lora_swiglu
+from experiments.v5.lora_mlp_kernel_v5 import (
+    lora_mlp_v5,
+    LoRAMLPv5,
+    lora_mlp_v5_inference,
+    pack_gate_up_weights,
+    pack_down_weights,
+    merge_lora_weights,
+    prepare_inference_weights,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -555,7 +564,7 @@ class TestV3LoRAMLPv3:
         s = 1.0
 
         ref = torch.nn.functional.silu(e + s * (xa_gate @ B_gate.t())) * (g + s * (xa_up @ B_up.t()))
-        out = fused_lora_swiglu(e, g, xa_gate, xa_up, B_gate, B_up, s, s)
+        out, _, _ = fused_lora_swiglu(e, g, xa_gate, xa_up, B_gate, B_up, s, s)
         # tl.dot uses tf32 for fp32 inputs (standard Triton behavior), so ~1e-2 precision
         torch.testing.assert_close(out, ref, rtol=5e-2, atol=0.5)
 
@@ -567,7 +576,7 @@ class TestV3LoRAMLPv3:
         g = torch.randn(M, N, device=DEVICE, dtype=torch.float32)
 
         ref = torch.nn.functional.silu(e) * g
-        out = fused_lora_swiglu(e, g, None, None, None, None)
+        out, _, _ = fused_lora_swiglu(e, g, None, None, None, None)
         torch.testing.assert_close(out, ref, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.parametrize("scale", [0.5, 1.0, 2.0, 0.125])
@@ -583,7 +592,7 @@ class TestV3LoRAMLPv3:
         B_up = torch.randn(N, r, device=DEVICE, dtype=torch.float32)
 
         ref = torch.nn.functional.silu(e + scale * (xa_gate @ B_gate.t())) * (g + scale * (xa_up @ B_up.t()))
-        out = fused_lora_swiglu(e, g, xa_gate, xa_up, B_gate, B_up, scale, scale)
+        out, _, _ = fused_lora_swiglu(e, g, xa_gate, xa_up, B_gate, B_up, scale, scale)
         torch.testing.assert_close(out, ref, rtol=5e-2, atol=1.0)
 
     # ── Sequence length sweep ──
@@ -751,3 +760,250 @@ class TestV3LoRAMLPv3:
 
         rel_err = ((v3_out.float() - unsloth_out.float()).abs() / (unsloth_out.float().abs() + 1e-8)).mean()
         assert rel_err < 0.15, f"Mean relative error vs Unsloth too high: {rel_err:.4f}"
+
+
+# ---------------------------------------------------------------------------
+# v5: Packed cuBLAS Matmuls + Triton LoRA-SwiGLU Epilogue (Training & Inference)
+# ---------------------------------------------------------------------------
+
+class TestV5:
+    """Tests for v5 packed cuBLAS LoRA MLP (training + inference paths)."""
+
+    # ── Training forward (packed mega-GEMM + Triton epilogue + packed down) ──
+
+    def test_packed_forward_fp32(self):
+        """v5 packed forward matches PyTorch reference in fp32."""
+        torch.manual_seed(42)
+        B, S, H, I, r = 2, 64, 128, 256, 16
+        params = make_lora_mlp_params(H, I, r, dtype=torch.float32, device=DEVICE, requires_grad=False)
+        X = torch.randn(B, S, H, dtype=torch.float32, device=DEVICE)
+
+        ref = lora_swiglu_mlp(X, **params)
+        out = lora_mlp_v5(
+            X,
+            params["W_gate"], params["A_gate"], params["B_gate"], params["s_gate"],
+            params["W_up"], params["A_up"], params["B_up"], params["s_up"],
+            params["W_down"], params["A_down"], params["B_down"], params["s_down"],
+        )
+        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+
+    def test_packed_forward_bf16(self):
+        """v5 packed forward in bf16 close to fp32 ground truth."""
+        torch.manual_seed(42)
+        B, S, H, I, r = 2, 128, 256, 512, 16
+        params_fp32 = make_lora_mlp_params(H, I, r, dtype=torch.float32, device=DEVICE, requires_grad=False)
+        params_bf16 = {k: (v.bfloat16() if isinstance(v, torch.Tensor) else v) for k, v in params_fp32.items()}
+        X_fp32 = torch.randn(B, S, H, dtype=torch.float32, device=DEVICE)
+
+        ref = lora_swiglu_mlp(X_fp32, **params_fp32)
+        out = lora_mlp_v5(
+            X_fp32.bfloat16(),
+            params_bf16["W_gate"], params_bf16["A_gate"], params_bf16["B_gate"], params_bf16["s_gate"],
+            params_bf16["W_up"], params_bf16["A_up"], params_bf16["B_up"], params_bf16["s_up"],
+            params_bf16["W_down"], params_bf16["A_down"], params_bf16["B_down"], params_bf16["s_down"],
+        )
+        torch.testing.assert_close(out.float(), ref, rtol=5e-2, atol=2.0)
+
+    @pytest.mark.parametrize("rank", [8, 16, 32, 64])
+    def test_packed_rank_sweep(self, rank):
+        """v5 packed forward across LoRA ranks in fp32."""
+        torch.manual_seed(42)
+        B, S, H, I = 2, 64, 128, 256
+        params = make_lora_mlp_params(H, I, rank, dtype=torch.float32, device=DEVICE, requires_grad=False)
+        X = torch.randn(B, S, H, dtype=torch.float32, device=DEVICE)
+
+        ref = lora_swiglu_mlp(X, **params)
+        out = lora_mlp_v5(
+            X,
+            params["W_gate"], params["A_gate"], params["B_gate"], params["s_gate"],
+            params["W_up"], params["A_up"], params["B_up"], params["s_up"],
+            params["W_down"], params["A_down"], params["B_down"], params["s_down"],
+        )
+        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+
+    def test_packed_vs_unsloth_bf16(self):
+        """v5 packed forward matches Unsloth apply_lora_mlp_swiglu in bf16."""
+        torch.manual_seed(42)
+        B, S, H, I, r = 2, 64, 256, 512, 16
+        u_params = unsloth_make_params(H, I, r, dtype=torch.bfloat16, device=DEVICE)
+        X = torch.randn(B, S, H, dtype=torch.bfloat16, device=DEVICE)
+
+        unsloth_out = unsloth_lora_mlp(X, **u_params)
+        gp, up, dp = u_params["gate_proj"], u_params["up_proj"], u_params["down_proj"]
+        v5_out = lora_mlp_v5(
+            X,
+            gp["W"], gp["A"], gp["B"], gp["s"],
+            up["W"], up["A"], up["B"], up["s"],
+            dp["W"], dp["A"], dp["B"], dp["s"],
+        )
+        torch.testing.assert_close(v5_out.float(), unsloth_out.float(), rtol=5e-2, atol=2.0)
+
+    # ── Inference forward (pre-merged weights + cublasLt SWISH or Triton fallback) ──
+
+    def test_inference_fp32(self):
+        """v5 inference path with pre-merged weights matches reference in fp32."""
+        torch.manual_seed(42)
+        B, S, H, I, r = 2, 64, 128, 256, 16
+        params = make_lora_mlp_params(H, I, r, dtype=torch.float32, device=DEVICE, requires_grad=False)
+        X = torch.randn(B, S, H, dtype=torch.float32, device=DEVICE)
+
+        ref = lora_swiglu_mlp(X, **params)
+        W_gate_eff_T, W_up_eff_T, W_down_eff_T = prepare_inference_weights(
+            params["W_gate"], params["A_gate"], params["B_gate"], params["s_gate"],
+            params["W_up"], params["A_up"], params["B_up"], params["s_up"],
+            params["W_down"], params["A_down"], params["B_down"], params["s_down"],
+        )
+        out = lora_mlp_v5_inference(X, W_gate_eff_T, W_up_eff_T, W_down_eff_T)
+        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+
+    def test_inference_bf16(self):
+        """v5 inference path with pre-merged weights in bf16 close to fp32 ground truth."""
+        torch.manual_seed(42)
+        B, S, H, I, r = 2, 128, 256, 512, 16
+        params_fp32 = make_lora_mlp_params(H, I, r, dtype=torch.float32, device=DEVICE, requires_grad=False)
+        params_bf16 = {k: (v.bfloat16() if isinstance(v, torch.Tensor) else v) for k, v in params_fp32.items()}
+        X_fp32 = torch.randn(B, S, H, dtype=torch.float32, device=DEVICE)
+
+        ref = lora_swiglu_mlp(X_fp32, **params_fp32)
+        W_gate_eff_T, W_up_eff_T, W_down_eff_T = prepare_inference_weights(
+            params_bf16["W_gate"], params_bf16["A_gate"], params_bf16["B_gate"], params_bf16["s_gate"],
+            params_bf16["W_up"], params_bf16["A_up"], params_bf16["B_up"], params_bf16["s_up"],
+            params_bf16["W_down"], params_bf16["A_down"], params_bf16["B_down"], params_bf16["s_down"],
+        )
+        out = lora_mlp_v5_inference(X_fp32.bfloat16(), W_gate_eff_T, W_up_eff_T, W_down_eff_T)
+        torch.testing.assert_close(out.float(), ref, rtol=5e-2, atol=2.0)
+
+    # ── Backward correctness (fp64 gradcheck + bf16 vs reference) ──
+
+    def test_backward_gradcheck(self):
+        """torch.autograd.gradcheck passes in fp64 for LoRAMLPv5 on small inputs."""
+        torch.manual_seed(42)
+        B, S, H, I, r = 2, 4, 16, 32, 4
+        params = make_lora_mlp_params(H, I, r, dtype=torch.float64, device=DEVICE, requires_grad=True)
+        X = torch.randn(B, S, H, dtype=torch.float64, device=DEVICE, requires_grad=True)
+
+        inputs = (
+            X,
+            params["W_gate"], params["A_gate"], params["B_gate"], params["s_gate"],
+            params["W_up"], params["A_up"], params["B_up"], params["s_up"],
+            params["W_down"], params["A_down"], params["B_down"], params["s_down"],
+        )
+        assert torch.autograd.gradcheck(LoRAMLPv5.apply, inputs, eps=1e-6, atol=1e-4)
+
+    def test_backward_bf16(self):
+        """v5 LoRA gradients match the PyTorch reference backward in bf16 (loose tolerances)."""
+        from reference.lora_mlp_pytorch import LoRAMLP
+
+        torch.manual_seed(42)
+        B, S, H, I, r = 2, 32, 128, 256, 8
+        params = make_lora_mlp_params(H, I, r, dtype=torch.bfloat16, device=DEVICE, requires_grad=True)
+        X_data = torch.randn(B, S, H, dtype=torch.bfloat16, device=DEVICE)
+
+        def _run_backward(fn_class, params_dict):
+            X = X_data.clone().detach().requires_grad_(True)
+            p = {k: (v.clone().detach().requires_grad_(v.requires_grad) if isinstance(v, torch.Tensor) else v)
+                 for k, v in params_dict.items()}
+            out = fn_class.apply(
+                X, p["W_gate"], p["A_gate"], p["B_gate"], p["s_gate"],
+                p["W_up"], p["A_up"], p["B_up"], p["s_up"],
+                p["W_down"], p["A_down"], p["B_down"], p["s_down"],
+            )
+            out.sum().backward()
+            return X.grad, p["A_gate"].grad, p["B_gate"].grad, p["A_up"].grad, p["B_up"].grad, p["A_down"].grad, p["B_down"].grad
+
+        ref_grads = _run_backward(LoRAMLP, params)
+        v5_grads = _run_backward(LoRAMLPv5, params)
+
+        names = ["dX", "dA_gate", "dB_gate", "dA_up", "dB_up", "dA_down", "dB_down"]
+        for name, rg, vg in zip(names, ref_grads, v5_grads):
+            torch.testing.assert_close(vg.float(), rg.float(), rtol=5e-2, atol=2.0, msg=f"{name} mismatch")
+
+    # ── Edge cases ──
+
+    def test_v5_no_lora(self):
+        """v5 with A/B = None (no LoRA) still works."""
+        torch.manual_seed(42)
+        B, S, H, I = 2, 64, 128, 256
+        X = torch.randn(B, S, H, dtype=torch.float32, device=DEVICE)
+        W_gate = torch.randn(I, H, dtype=torch.float32, device=DEVICE) * 0.02
+        W_up = torch.randn(I, H, dtype=torch.float32, device=DEVICE) * 0.02
+        W_down = torch.randn(H, I, dtype=torch.float32, device=DEVICE) * 0.02
+
+        ref = lora_swiglu_mlp(X, W_gate, None, None, 1.0, W_up, None, None, 1.0, W_down, None, None, 1.0)
+        out = lora_mlp_v5(
+            X,
+            W_gate, None, None, 1.0,
+            W_up, None, None, 1.0,
+            W_down, None, None, 1.0,
+        )
+        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+
+    def test_v5_non_power_of_2(self):
+        """v5 handles non-power-of-2 dimensions."""
+        torch.manual_seed(42)
+        B, S, H, I, r = 3, 37, 97, 193, 7
+        params = make_lora_mlp_params(H, I, r, dtype=torch.float32, device=DEVICE, requires_grad=False)
+        X = torch.randn(B, S, H, dtype=torch.float32, device=DEVICE)
+
+        ref = lora_swiglu_mlp(X, **params)
+        out = lora_mlp_v5(
+            X,
+            params["W_gate"], params["A_gate"], params["B_gate"], params["s_gate"],
+            params["W_up"], params["A_up"], params["B_up"], params["s_up"],
+            params["W_down"], params["A_down"], params["B_down"], params["s_down"],
+        )
+        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+
+    def test_v5_3d_input(self):
+        """v5 works with 3D input [B, S, H]."""
+        torch.manual_seed(42)
+        B, S, H, I, r = 2, 64, 128, 256, 16
+        params = make_lora_mlp_params(H, I, r, dtype=torch.float32, device=DEVICE, requires_grad=False)
+        X = torch.randn(B, S, H, dtype=torch.float32, device=DEVICE)
+
+        ref = lora_swiglu_mlp(X, **params)
+        out = lora_mlp_v5(
+            X,
+            params["W_gate"], params["A_gate"], params["B_gate"], params["s_gate"],
+            params["W_up"], params["A_up"], params["B_up"], params["s_up"],
+            params["W_down"], params["A_down"], params["B_down"], params["s_down"],
+        )
+        assert out.shape == (B, S, H)
+        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+
+    def test_v5_2d_input(self):
+        """v5 works with 2D input [M, H]."""
+        torch.manual_seed(42)
+        M, H, I, r = 128, 256, 512, 16
+        params = make_lora_mlp_params(H, I, r, dtype=torch.float32, device=DEVICE, requires_grad=False)
+        X = torch.randn(M, H, dtype=torch.float32, device=DEVICE)
+
+        ref = lora_swiglu_mlp(X.unsqueeze(0), **params).squeeze(0)
+        out = lora_mlp_v5(
+            X,
+            params["W_gate"], params["A_gate"], params["B_gate"], params["s_gate"],
+            params["W_up"], params["A_up"], params["B_up"], params["s_up"],
+            params["W_down"], params["A_down"], params["B_down"], params["s_down"],
+        )
+        assert out.shape == (M, H)
+        torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+
+    @pytest.mark.parametrize("H,I", [(4096, 14336), (5120, 17920)])
+    def test_v5_llama_shapes_bf16(self, H, I):
+        """v5 packed forward at LLaMA-8B and LLaMA-13B dimensions in bf16."""
+        torch.manual_seed(42)
+        B, S, r = 1, 256, 16
+        params = make_lora_mlp_params(H, I, r, dtype=torch.bfloat16, device=DEVICE, requires_grad=False)
+        X = torch.randn(B, S, H, dtype=torch.bfloat16, device=DEVICE)
+
+        ref_fp32 = lora_swiglu_mlp(
+            X.float(),
+            **{k: (v.float() if isinstance(v, torch.Tensor) else v) for k, v in params.items()},
+        )
+        out = lora_mlp_v5(
+            X,
+            params["W_gate"], params["A_gate"], params["B_gate"], params["s_gate"],
+            params["W_up"], params["A_up"], params["B_up"], params["s_up"],
+            params["W_down"], params["A_down"], params["B_down"], params["s_down"],
+        )
+        torch.testing.assert_close(out.float(), ref_fp32, rtol=5e-2, atol=2.0)

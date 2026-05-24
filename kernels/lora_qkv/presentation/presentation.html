@@ -1,0 +1,1733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fused LoRA QKV Kernel — From 9 cuBLAS Calls to 2</title>
+<style>
+  :root {
+    --bg: #0f0f1a;
+    --bg-card: #1a1a2e;
+    --bg-card-alt: #16213e;
+    --text: #e0e0e0;
+    --text-dim: #8888aa;
+    --text-bright: #ffffff;
+    --accent-blue: #4fc3f7;
+    --accent-green: #66bb6a;
+    --accent-gold: #ffd54f;
+    --accent-red: #ef5350;
+    --accent-orange: #ff9800;
+    --accent-purple: #b388ff;
+    --accent-gray: #78909c;
+    --accent-teal: #26c6da;
+    --border: #2a2a4a;
+    --code-bg: #0d1117;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --slide-transition: 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Slide Container ── */
+  #deck {
+    display: flex;
+    width: 100%; height: 100%;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .slide {
+    min-width: 100%; width: 100%; height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 60px 80px;
+    position: absolute;
+    top: 0; left: 0;
+    opacity: 0;
+    transform: translateX(60px);
+    transition: opacity var(--slide-transition), transform var(--slide-transition);
+    pointer-events: none;
+    overflow-y: auto;
+  }
+
+  .slide.active {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: all;
+    z-index: 2;
+  }
+
+  .slide.exit-left {
+    opacity: 0;
+    transform: translateX(-60px);
+  }
+
+  .slide.exit-right {
+    opacity: 0;
+    transform: translateX(60px);
+  }
+
+  .slide.enter-left {
+    transform: translateX(-60px);
+  }
+
+  .slide-inner {
+    max-width: 1400px;
+    width: 100%;
+  }
+
+  /* ── Typography ── */
+  h1 { font-size: 3rem; font-weight: 800; color: var(--text-bright); line-height: 1.15; margin-bottom: 0.4em; letter-spacing: -0.02em; }
+  h2 { font-size: 2rem; font-weight: 700; color: var(--text-bright); margin-bottom: 0.5em; letter-spacing: -0.01em; }
+  h3 { font-size: 1.3rem; font-weight: 600; color: var(--accent-blue); margin-bottom: 0.4em; text-transform: uppercase; letter-spacing: 0.05em; }
+  p { margin-bottom: 0.8em; font-size: 1.1rem; }
+  .subtitle { font-size: 1.4rem; color: var(--accent-blue); font-weight: 400; margin-bottom: 1.2em; }
+  .dim { color: var(--text-dim); }
+  .bright { color: var(--text-bright); font-weight: 600; }
+  .highlight-blue { color: var(--accent-blue); font-weight: 600; }
+  .highlight-green { color: var(--accent-green); font-weight: 600; }
+  .highlight-gold { color: var(--accent-gold); font-weight: 600; }
+  .highlight-red { color: var(--accent-red); font-weight: 600; }
+  .highlight-orange { color: var(--accent-orange); font-weight: 600; }
+
+  /* ── Badges ── */
+  .badges { display: flex; gap: 16px; margin: 1.5em 0; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-bright);
+    transition: border-color 0.2s;
+  }
+  .badge .num { font-size: 1.5rem; font-weight: 800; }
+  .badge.blue { border-color: var(--accent-blue); }
+  .badge.blue .num { color: var(--accent-blue); }
+  .badge.green { border-color: var(--accent-green); }
+  .badge.green .num { color: var(--accent-green); }
+  .badge.gold { border-color: var(--accent-gold); }
+  .badge.gold .num { color: var(--accent-gold); }
+  .badge.teal { border-color: var(--accent-teal); }
+  .badge.teal .num { color: var(--accent-teal); }
+
+  /* ── Two-Column Layout ── */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+  .cols-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; align-items: start; }
+  .cols.wide-left { grid-template-columns: 1.3fr 0.7fr; }
+  .cols.wide-right { grid-template-columns: 0.7fr 1.3fr; }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    margin-bottom: 16px;
+  }
+  .card.red-border { border-color: var(--accent-red); }
+  .card.blue-border { border-color: var(--accent-blue); }
+  .card.green-border { border-color: var(--accent-green); }
+  .card.gold-border { border-color: var(--accent-gold); }
+
+  /* ── Code Blocks ── */
+  .code {
+    background: var(--code-bg);
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    padding: 18px 22px;
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    line-height: 1.7;
+    overflow-x: auto;
+    margin: 12px 0;
+  }
+  .code .kw { color: #ff7b72; }
+  .code .fn { color: #d2a8ff; }
+  .code .str { color: #a5d6ff; }
+  .code .num { color: #79c0ff; }
+  .code .op { color: #ff7b72; }
+  .code .comment { color: #8b949e; font-style: italic; }
+  .code .var { color: #ffa657; }
+
+  /* ── Math ── */
+  .math {
+    font-family: var(--font-mono);
+    font-size: 1.15rem;
+    color: var(--accent-blue);
+    background: rgba(79,195,247,0.08);
+    padding: 12px 20px;
+    border-radius: 8px;
+    border-left: 3px solid var(--accent-blue);
+    margin: 12px 0;
+    line-height: 1.8;
+  }
+
+  /* ── Flow Diagrams ── */
+  .flow { display: flex; flex-direction: column; align-items: center; gap: 0; margin: 16px 0; }
+  .flow-h { display: flex; align-items: center; gap: 0; margin: 16px 0; flex-wrap: wrap; justify-content: center; }
+
+  .flow-box {
+    padding: 14px 24px;
+    border-radius: 10px;
+    border: 2px solid var(--border);
+    background: var(--bg-card);
+    text-align: center;
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text-bright);
+    position: relative;
+    min-width: 120px;
+  }
+  .flow-box.wide { min-width: 320px; }
+  .flow-box.x-wide { min-width: 420px; }
+  .flow-box.cublas { border-color: var(--accent-blue); background: rgba(79,195,247,0.08); }
+  .flow-box.triton { border-color: var(--accent-green); background: rgba(102,187,106,0.08); }
+  .flow-box.input { border-color: var(--accent-purple); background: rgba(179,136,255,0.08); }
+  .flow-box.output { border-color: var(--accent-gold); background: rgba(255,213,79,0.08); }
+  .flow-box.error { border-color: var(--accent-red); background: rgba(239,83,80,0.08); }
+  .flow-box.unsloth { border-color: var(--accent-gray); background: rgba(120,144,156,0.08); }
+  .flow-box small { display: block; font-size: 0.8rem; color: var(--text-dim); font-weight: 400; margin-top: 4px; }
+
+  .flow-arrow {
+    width: 2px; height: 28px;
+    background: var(--text-dim);
+    position: relative;
+  }
+  .flow-arrow::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid var(--text-dim);
+  }
+
+  .flow-arrow-right {
+    height: 2px; width: 32px;
+    background: var(--text-dim);
+    position: relative;
+  }
+  .flow-arrow-right::after {
+    content: '';
+    position: absolute;
+    right: -1px; top: 50%;
+    transform: translateY(-50%);
+    width: 0; height: 0;
+    border-top: 6px solid transparent;
+    border-bottom: 6px solid transparent;
+    border-left: 8px solid var(--text-dim);
+  }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.92rem;
+  }
+  th {
+    background: var(--bg-card-alt);
+    color: var(--accent-blue);
+    font-weight: 600;
+    text-align: left;
+    padding: 12px 16px;
+    border-bottom: 2px solid var(--accent-blue);
+    white-space: nowrap;
+    text-transform: uppercase;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+  }
+  td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tr:hover td { background: rgba(79,195,247,0.04); }
+  td.best { color: var(--accent-green); font-weight: 700; }
+  td.worst { color: var(--accent-red); font-weight: 600; }
+  td.baseline { color: var(--accent-gray); }
+  tr.highlight-row td { background: rgba(102,187,106,0.08); }
+
+  /* ── Kernel Launch Grid ── */
+  .launch-grid {
+    display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0;
+  }
+  .launch-box {
+    width: 58px; height: 42px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.7rem; font-weight: 600;
+    color: var(--text-bright);
+  }
+  .launch-box.xw { background: #1565c0; }
+  .launch-box.xa { background: #7b1fa2; }
+  .launch-box.addmm { background: #e65100; }
+  .launch-box.cublas-big { background: #0277bd; }
+  .launch-box.triton-ep { background: #2e7d32; }
+
+  /* ── Insight List ── */
+  .insight-list { list-style: none; padding: 0; }
+  .insight-list li {
+    display: flex; gap: 16px; align-items: flex-start;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 1.05rem;
+  }
+  .insight-list li:last-child { border-bottom: none; }
+  .insight-num {
+    flex-shrink: 0;
+    width: 36px; height: 36px;
+    background: var(--accent-blue);
+    color: var(--bg);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 0.9rem;
+  }
+  .insight-text strong { color: var(--text-bright); }
+
+  /* ── Bar Chart ── */
+  .bar-chart { margin: 16px 0; }
+  .bar-row {
+    display: flex; align-items: center; gap: 12px;
+    margin: 8px 0;
+  }
+  .bar-label { width: 80px; text-align: right; font-size: 0.85rem; font-weight: 600; color: var(--text-dim); flex-shrink: 0; }
+  .bar-track { flex: 1; height: 32px; background: var(--bg-card-alt); border-radius: 6px; overflow: hidden; position: relative; }
+  .bar-fill {
+    height: 100%; border-radius: 6px;
+    display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 10px;
+    font-size: 0.8rem; font-weight: 700; color: var(--bg);
+    transition: width 0.8s ease;
+  }
+  .bar-value {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    font-size: 0.82rem; font-weight: 600; color: var(--text-dim);
+  }
+
+  /* ── Lesson Box ── */
+  .lesson-box {
+    background: rgba(239,83,80,0.1);
+    border: 1px solid var(--accent-red);
+    border-radius: 12px;
+    padding: 18px 24px;
+    margin: 16px 0;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .lesson-box.green {
+    background: rgba(102,187,106,0.1);
+    border-color: var(--accent-green);
+  }
+  .lesson-box.blue {
+    background: rgba(79,195,247,0.1);
+    border-color: var(--accent-blue);
+  }
+  .lesson-icon { font-size: 1.6rem; flex-shrink: 0; }
+  .lesson-text { font-size: 1.05rem; }
+  .lesson-text strong { color: var(--text-bright); }
+
+  /* ── Architecture Diagram ── */
+  .arch-diagram {
+    display: flex; flex-direction: column; align-items: center; gap: 0;
+    padding: 24px;
+    background: var(--bg-card);
+    border-radius: 16px;
+    border: 1px solid var(--border);
+  }
+  .arch-box {
+    width: 420px;
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 24px;
+    text-align: center;
+    background: var(--bg);
+  }
+  .arch-box .label { font-weight: 700; font-size: 1rem; color: var(--text-bright); }
+  .arch-box .detail { font-family: var(--font-mono); font-size: 0.85rem; color: var(--text-dim); margin-top: 4px; }
+  .arch-box.blue { border-color: var(--accent-blue); }
+  .arch-box.green { border-color: var(--accent-green); }
+  .arch-box.purple { border-color: var(--accent-purple); }
+  .arch-box.gold { border-color: var(--accent-gold); }
+
+  .arch-arrow {
+    width: 2px; height: 24px;
+    background: var(--text-dim);
+    position: relative;
+  }
+  .arch-arrow::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 50%;
+    transform: translateX(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid var(--text-dim);
+  }
+  .arch-label {
+    font-size: 0.8rem;
+    color: var(--accent-blue);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 2px 0;
+  }
+
+  .arch-outputs {
+    display: flex; gap: 16px; margin-top: 0;
+  }
+  .arch-out-box {
+    border: 2px solid var(--accent-gold);
+    border-radius: 10px;
+    padding: 10px 20px;
+    text-align: center;
+    background: rgba(255,213,79,0.06);
+  }
+  .arch-out-box .label { font-weight: 700; color: var(--accent-gold); font-size: 0.95rem; }
+  .arch-out-box .detail { font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-dim); }
+
+  /* ── Side-by-Side Comparison ── */
+  .vs-container { display: flex; gap: 40px; align-items: stretch; }
+  .vs-side { flex: 1; }
+  .vs-side h3 { text-align: center; margin-bottom: 12px; }
+  .vs-divider {
+    width: 2px; background: var(--border); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .vs-label {
+    position: absolute; top: 50%; transform: translateY(-50%) rotate(-90deg);
+    font-weight: 700; color: var(--text-dim); font-size: 0.8rem;
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+
+  /* ── Navigation ── */
+  .nav-bar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 56px;
+    background: rgba(15,15,26,0.92);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 100;
+    padding: 0 24px;
+  }
+  .nav-btn {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .nav-btn:hover { background: var(--bg-card-alt); border-color: var(--accent-blue); }
+  .nav-btn:disabled { opacity: 0.3; cursor: default; }
+  .nav-btn:disabled:hover { background: var(--bg-card); border-color: var(--border); }
+
+  .nav-dots {
+    display: flex; gap: 6px;
+  }
+  .nav-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.2s;
+    padding: 0;
+  }
+  .nav-dot.active { background: var(--accent-blue); transform: scale(1.4); }
+  .nav-dot:hover { background: var(--accent-blue); }
+
+  .nav-counter {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    font-weight: 500;
+    min-width: 60px;
+    text-align: center;
+    font-family: var(--font-mono);
+  }
+
+  /* ── Progress Bar (top) ── */
+  .progress-bar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--bg-card);
+    z-index: 100;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
+    transition: width var(--slide-transition);
+  }
+
+  /* ── Speed Comparison Visual ── */
+  .speed-compare {
+    display: flex; gap: 20px; align-items: flex-end; justify-content: center;
+    margin: 20px 0; padding: 20px 0;
+  }
+  .speed-bar-container { text-align: center; }
+  .speed-bar {
+    width: 80px;
+    border-radius: 8px 8px 0 0;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 10px;
+    font-weight: 700; font-size: 0.85rem;
+    transition: height 0.8s ease;
+  }
+  .speed-bar-label {
+    margin-top: 8px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+  .speed-bar-time {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  /* ── Splits ── */
+  .split-arrow {
+    display: flex; justify-content: center; gap: 60px; margin-top: 0;
+  }
+  .split-line {
+    width: 2px; height: 20px;
+    background: var(--text-dim);
+    position: relative;
+  }
+  .split-line::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 50%;
+    transform: translateX(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 7px solid var(--text-dim);
+  }
+
+  /* ── X mark overlay ── */
+  .x-mark {
+    color: var(--accent-red);
+    font-size: 4rem;
+    font-weight: 900;
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%) rotate(-12deg);
+    opacity: 0.7;
+    text-shadow: 0 0 20px rgba(239,83,80,0.5);
+    pointer-events: none;
+  }
+
+  /* ── Utilities ── */
+  .mt-1 { margin-top: 8px; }
+  .mt-2 { margin-top: 16px; }
+  .mt-3 { margin-top: 24px; }
+  .mb-1 { margin-bottom: 8px; }
+  .mb-2 { margin-bottom: 16px; }
+  .text-center { text-align: center; }
+  .text-small { font-size: 0.85rem; }
+  .text-xs { font-size: 0.78rem; }
+  .mono { font-family: var(--font-mono); }
+  .relative { position: relative; }
+
+  .big-number {
+    font-size: 3.5rem;
+    font-weight: 900;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+
+  .tag {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .tag.red { background: rgba(239,83,80,0.2); color: var(--accent-red); }
+  .tag.blue { background: rgba(79,195,247,0.2); color: var(--accent-blue); }
+  .tag.green { background: rgba(102,187,106,0.2); color: var(--accent-green); }
+  .tag.gold { background: rgba(255,213,79,0.2); color: var(--accent-gold); }
+  .tag.gray { background: rgba(120,144,156,0.2); color: var(--accent-gray); }
+
+  .gqa-note {
+    background: rgba(179,136,255,0.08);
+    border-left: 3px solid var(--accent-purple);
+    padding: 10px 16px;
+    border-radius: 0 8px 8px 0;
+    font-size: 0.92rem;
+    margin: 12px 0;
+  }
+
+  /* Slide-specific padding adjustment for dense content */
+  .slide.dense { padding: 40px 60px; justify-content: flex-start; padding-top: 50px; }
+</style>
+</head>
+<body>
+
+<div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
+
+<div id="deck">
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 0: TITLE
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide active" data-slide="0">
+  <div class="slide-inner text-center">
+    <p class="dim text-small" style="letter-spacing:0.15em; text-transform:uppercase; margin-bottom:1.5em;">Kernel Optimization Case Study</p>
+    <h1 style="font-size:3.2rem; max-width:900px; margin:0 auto 0.3em;">Fused LoRA QKV Kernel:<br><span style="color:var(--accent-blue)">From 9 cuBLAS Calls to 2</span></h1>
+    <p class="subtitle" style="font-size:1.3rem;">1.26× faster than Unsloth on A100 &mdash; with equal memory</p>
+
+    <div class="badges" style="justify-content:center; margin-top:2em;">
+      <div class="badge blue"><span class="num">2</span> kernel launches</div>
+      <div class="badge green"><span class="num">1×</span> X read from HBM</div>
+      <div class="badge gold"><span class="num">97</span> MB memory</div>
+      <div class="badge teal"><span class="num">1.78</span> ms forward</div>
+    </div>
+
+    <p class="dim mt-3" style="font-size:0.9rem;">LLaMA-3 8B &bull; GQA 32q/8kv &bull; bf16 &bull; A100-SXM4-80GB<br>batch=4 &bull; seq=2048 &bull; hidden=4096 &bull; LoRA rank=16</p>
+
+    <p class="dim" style="margin-top:3em; font-size:0.85rem;">Use <span class="mono" style="color:var(--accent-blue);">← →</span> arrow keys or click buttons to navigate</p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 1: THE PROBLEM
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="1">
+  <div class="slide-inner">
+    <h3>The Problem</h3>
+    <h2>What is LoRA QKV?</h2>
+
+    <div class="cols" style="margin-top:20px;">
+      <div>
+        <p>Multi-head attention computes <span class="bright">Q, K, V projections</span> from input <span class="mono highlight-blue">X</span>. With <span class="bright">LoRA</span> (Low-Rank Adaptation), each projection adds a low-rank correction:</p>
+
+        <div class="math">
+          Q = X @ W<sub>q</sub><sup>T</sup> + s · (X @ A<sub>q</sub><sup>T</sup>) @ B<sub>q</sub><sup>T</sup><br>
+          K = X @ W<sub>k</sub><sup>T</sup> + s · (X @ A<sub>k</sub><sup>T</sup>) @ B<sub>k</sub><sup>T</sup><br>
+          V = X @ W<sub>v</sub><sup>T</sup> + s · (X @ A<sub>v</sub><sup>T</sup>) @ B<sub>v</sub><sup>T</sup>
+        </div>
+
+        <p class="mt-2">
+          <span class="bright">W</span> = frozen base weight (large: 4096×4096)<br>
+          <span class="bright">A, B</span> = trainable LoRA adapters (tiny: rank 8–64)<br>
+          <span class="bright">s</span> = scaling factor
+        </p>
+
+        <div class="gqa-note mt-2">
+          <strong style="color:var(--accent-purple);">GQA (Grouped-Query Attention):</strong> Q has 32 heads → output 4096, but K/V only have 8 heads → output 1024. This 4× asymmetry matters for fusion.
+        </div>
+      </div>
+
+      <div>
+        <p class="dim text-small mb-1" style="text-transform:uppercase;letter-spacing:0.1em;">Data flow — LLaMA-3 8B scale</p>
+        <div class="flow">
+          <div class="flow-box input wide">
+            <strong>Input X</strong>
+            <small>[8192, 4096] = 64 MB in bf16</small>
+          </div>
+          <div class="flow-arrow"></div>
+          <div style="display:flex; gap:16px;">
+            <div class="flow-box" style="border-color:var(--accent-blue); min-width:140px;">
+              <strong>Q projection</strong>
+              <small>W<sub>q</sub> + LoRA<sub>q</sub></small>
+              <small style="color:var(--accent-blue);">out: [8192, 4096]</small>
+            </div>
+            <div class="flow-box" style="border-color:var(--accent-green); min-width:140px;">
+              <strong>K projection</strong>
+              <small>W<sub>k</sub> + LoRA<sub>k</sub></small>
+              <small style="color:var(--accent-green);">out: [8192, 1024]</small>
+            </div>
+            <div class="flow-box" style="border-color:var(--accent-gold); min-width:140px;">
+              <strong>V projection</strong>
+              <small>W<sub>v</sub> + LoRA<sub>v</sub></small>
+              <small style="color:var(--accent-gold);">out: [8192, 1024]</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt-2" style="background:rgba(239,83,80,0.06); border-color:rgba(239,83,80,0.3);">
+          <p style="margin:0;"><strong style="color:var(--accent-red);">The bottleneck:</strong> X is 64 MB. Naive implementations read it from GPU memory <strong>6 times</strong> = <span class="highlight-red">384 MB</span> of wasted bandwidth.</p>
+          <p class="dim text-small" style="margin:8px 0 0;">A100 HBM bandwidth (the fast GPU off-chip memory): 2 TB/s. Reading X once takes ~32 μs; reading it 6× wastes ~160 μs.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 2: UNSLOTH BASELINE
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="2">
+  <div class="slide-inner">
+    <h3>Current State of the Art</h3>
+    <h2>How Unsloth Does It <span class="tag gray">baseline</span></h2>
+
+    <div class="cols" style="margin-top:16px;">
+      <div>
+        <p>Unsloth applies <span class="mono">matmul_lora()</span> independently to Q, K, V. Each call makes <strong>3 cuBLAS launches</strong>:</p>
+
+        <div class="code" style="font-size:0.85rem;">
+          <span class="comment"># Per projection (×3 for Q, K, V):</span><br>
+          base = <span class="fn">X @ W.t()</span>    <span class="comment"># cuBLAS call 1: read X</span><br>
+          XA   = <span class="fn">X @ A.t()</span>    <span class="comment"># cuBLAS call 2: read X again</span><br>
+          <span class="fn">base.addmm_</span>(XA, B.t())  <span class="comment"># cuBLAS call 3: in-place add</span>
+        </div>
+
+        <p class="mt-2"><strong>3 projections × 3 calls = <span class="highlight-red">9 kernel launches</span></strong></p>
+        <p><strong>X read <span class="highlight-red">6 times</span></strong> from HBM (2× per projection for W and A)</p>
+
+        <div class="card mt-2" style="padding:16px 20px;">
+          <p style="margin:0;" class="text-small"><span class="highlight-gold">Benchmark:</span> <span class="mono">2.035 ms</span> on A100 (rank=16, bf16)</p>
+          <p style="margin:4px 0 0;" class="text-small dim">Memory: 96 MB — tight thanks to addmm_ in-place operation</p>
+        </div>
+      </div>
+
+      <div>
+        <p class="dim text-small mb-1" style="text-transform:uppercase;letter-spacing:0.1em;">9 kernel launches visualized</p>
+
+        <div style="margin-bottom:12px;">
+          <p class="text-small bright mb-1">Q projection</p>
+          <div class="launch-grid">
+            <div class="launch-box xw">X@W<sub>q</sub></div>
+            <div class="launch-box xa">X@A<sub>q</sub></div>
+            <div class="launch-box addmm">addmm</div>
+          </div>
+        </div>
+        <div style="margin-bottom:12px;">
+          <p class="text-small bright mb-1">K projection</p>
+          <div class="launch-grid">
+            <div class="launch-box xw">X@W<sub>k</sub></div>
+            <div class="launch-box xa">X@A<sub>k</sub></div>
+            <div class="launch-box addmm">addmm</div>
+          </div>
+        </div>
+        <div style="margin-bottom:12px;">
+          <p class="text-small bright mb-1">V projection</p>
+          <div class="launch-grid">
+            <div class="launch-box xw">X@W<sub>v</sub></div>
+            <div class="launch-box xa">X@A<sub>v</sub></div>
+            <div class="launch-box addmm">addmm</div>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:10px; margin-top:12px; flex-wrap:wrap;">
+          <div style="display:flex; align-items:center; gap:5px;"><div style="width:14px;height:14px;border-radius:3px;background:#1565c0;"></div><span class="text-xs">X @ W (reads X)</span></div>
+          <div style="display:flex; align-items:center; gap:5px;"><div style="width:14px;height:14px;border-radius:3px;background:#7b1fa2;"></div><span class="text-xs">X @ A (reads X again)</span></div>
+          <div style="display:flex; align-items:center; gap:5px;"><div style="width:14px;height:14px;border-radius:3px;background:#e65100;"></div><span class="text-xs">addmm_ (in-place LoRA)</span></div>
+        </div>
+
+        <p class="highlight-red mt-2" style="font-size:1rem;">
+          X read from HBM: 6 × 64 MB = 384 MB wasted bandwidth
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 3: V1 — ALL TRITON
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="3">
+  <div class="slide-inner">
+    <h3>v1 — First Attempt</h3>
+    <h2>All-Triton Fused LoRA <span class="tag red">slower</span></h2>
+
+    <div class="cols" style="margin-top:16px;">
+      <div>
+        <p>Fuse base matmul + LoRA into <strong>one Triton kernel</strong> per projection:</p>
+
+        <div class="flow" style="align-items:flex-start;">
+          <div class="flow-box input" style="width:280px;">Input X <small>[8192, 4096]</small></div>
+          <div class="flow-arrow"></div>
+          <div style="display:flex; gap:12px;">
+            <div class="flow-box error" style="min-width:100px; position:relative;">
+              Triton Q
+              <small>W + LoRA fused</small>
+            </div>
+            <div class="flow-box error" style="min-width:100px;">
+              Triton K
+              <small>W + LoRA fused</small>
+            </div>
+            <div class="flow-box error" style="min-width:100px;">
+              Triton V
+              <small>W + LoRA fused</small>
+            </div>
+          </div>
+        </div>
+
+        <p class="mt-2">Inside each kernel: output-stationary tiling with a two-pass approach:</p>
+        <ol style="margin-left:1.2em; font-size:0.95rem;">
+          <li>K-loop over W for base matmul: <span class="mono dim">acc += X_tile @ W_tile</span></li>
+          <li>K-loop over A for LoRA: <span class="mono dim">XA_tile = X_tile @ A_tile</span></li>
+          <li>Tiny dot for B: <span class="mono dim">acc += s * XA_tile @ B_tile</span></li>
+        </ol>
+
+        <p class="mt-2">Includes L2 swizzle (GROUP_SIZE_M=8) and 10 autotune configs.</p>
+      </div>
+
+      <div>
+        <div class="card red-border relative">
+          <p class="big-number highlight-red">0.70×</p>
+          <p class="bright" style="font-size:1.1rem;">30% slower than Unsloth</p>
+          <p class="dim mt-1">2.895 ms vs 2.035 ms (rank=16)</p>
+
+          <table class="mt-2 text-small">
+            <tr><th>Rank</th><th>Unsloth</th><th>v1</th><th>Ratio</th></tr>
+            <tr><td>8</td><td>2.030ms</td><td class="worst">2.888ms</td><td class="worst">0.70×</td></tr>
+            <tr><td>16</td><td>2.033ms</td><td class="worst">2.895ms</td><td class="worst">0.70×</td></tr>
+            <tr><td>32</td><td>2.015ms</td><td class="worst">3.001ms</td><td class="worst">0.67×</td></tr>
+            <tr><td>64</td><td>2.060ms</td><td class="worst">3.593ms</td><td class="worst">0.57×</td></tr>
+          </table>
+        </div>
+
+        <div class="lesson-box">
+          <div class="lesson-icon">✕</div>
+          <div class="lesson-text">
+            <strong>Key Lesson:</strong> Don't try to beat cuBLAS at matmul. Triton achieves only ~60% of cuBLAS throughput for large GEMMs. Use cuBLAS for the heavy matmul, Triton for the cheap fusion.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 4: V2 — THE BREAKTHROUGH
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="4">
+  <div class="slide-inner">
+    <h3>v2 — The Breakthrough</h3>
+    <h2>Packed W+A cuBLAS + Triton Epilogue <span class="tag blue">faster</span></h2>
+
+    <div class="cols" style="margin-top:16px;">
+      <div>
+        <p>Instead of separate matmuls for W and A, <strong>concatenate them</strong> and let cuBLAS read X only once:</p>
+
+        <div class="flow">
+          <div style="display:flex; gap:12px; align-items:center;">
+            <div class="flow-box" style="border-color:var(--accent-orange); min-width:180px;">
+              <strong>Pack weights</strong>
+              <small>W_packed = [W ; A]</small>
+              <small style="color:var(--accent-orange);">[N+r, K]</small>
+            </div>
+          </div>
+          <div class="flow-arrow"></div>
+          <div class="flow-box cublas wide">
+            <strong>1 cuBLAS call</strong>
+            <small>out = X @ W_packed<sup>T</sup> → [M, N+r]</small>
+            <small style="color:var(--accent-blue);">Reads X ONCE</small>
+          </div>
+          <div class="flow-arrow"></div>
+          <div style="display:flex; gap:12px; align-items:center;">
+            <div class="flow-box" style="min-width:140px;">
+              <strong>Split</strong>
+              <small>base = [:, :N]</small>
+              <small>XA = [:, N:]</small>
+            </div>
+          </div>
+          <div class="flow-arrow"></div>
+          <div class="flow-box triton wide">
+            <strong>Triton epilogue</strong>
+            <small>Y = base + s · XA @ B<sup>T</sup></small>
+            <small style="color:var(--accent-green);">Tiny [r, N] dot in registers</small>
+          </div>
+        </div>
+
+        <p class="mt-2 dim text-small">Applied 3× for Q, K, V = 6 total launches (3 cuBLAS + 3 Triton)</p>
+      </div>
+
+      <div>
+        <div class="card blue-border">
+          <p class="big-number highlight-blue">1.09×</p>
+          <p class="bright" style="font-size:1.1rem;">Beats Unsloth by 9%</p>
+          <p class="dim mt-1">1.869 ms vs 2.035 ms (rank=16)</p>
+
+          <table class="mt-2 text-small">
+            <tr><th>Rank</th><th>Unsloth</th><th>v2</th><th>Ratio</th></tr>
+            <tr><td>8</td><td>2.014ms</td><td class="best">1.927ms</td><td class="best">1.04×</td></tr>
+            <tr><td>16</td><td>2.035ms</td><td class="best">1.869ms</td><td class="best">1.09×</td></tr>
+            <tr><td>32</td><td>2.057ms</td><td class="best">1.856ms</td><td class="best">1.11×</td></tr>
+            <tr><td>64</td><td>2.044ms</td><td class="best">1.924ms</td><td class="best">1.06×</td></tr>
+          </table>
+        </div>
+
+        <div class="lesson-box blue">
+          <div class="lesson-icon">⚡</div>
+          <div class="lesson-text">
+            <strong>Why it works:</strong> LoRA's A matrix is tiny (rank × K). Packing it with W barely increases cuBLAS work, but eliminates a separate X read. The Triton epilogue's [r, BLOCK_N] dot fits entirely in registers — essentially free.
+          </div>
+        </div>
+
+        <p class="highlight-orange mt-1 text-small">⚠ Memory: 128 MB (33% more than Unsloth's 96 MB) — packed + final output coexist during epilogue</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 5: V2_2 — MEMORY FIX
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="5">
+  <div class="slide-inner">
+    <h3>v2_2 — Refinement</h3>
+    <h2>Memory Fix: In-Place Epilogue <span class="tag green">optimized</span></h2>
+
+    <div class="cols" style="margin-top:16px;">
+      <div>
+        <p>Two improvements over v2:</p>
+
+        <div class="card green-border" style="margin-top:12px;">
+          <p style="margin:0;"><strong style="color:var(--accent-green);">1. In-place epilogue</strong></p>
+          <p class="text-small dim" style="margin:4px 0 0;">Triton writes LoRA result directly into packed output's first N columns. No separate Y allocation needed.</p>
+        </div>
+
+        <div class="card green-border">
+          <p style="margin:0;"><strong style="color:var(--accent-green);">2. Fused 3-in-1 epilogue</strong></p>
+          <p class="text-small dim" style="margin:4px 0 0;">Single Triton kernel handles all 3 QKV epilogues using <span class="mono">program_id(1)</span> to select Q/K/V.</p>
+        </div>
+
+        <p class="mt-2"><strong>Launches:</strong> 3 cuBLAS + 1 Triton = <span class="highlight-green">4 total</span> (down from v2's 6)</p>
+
+        <p class="mt-2 dim text-small">Trade-off: fused epilogue wastes GPU threads for K/V in GQA (Q is 4× larger, so K/V blocks waste ¾ of the grid). v2_3 addresses this.</p>
+      </div>
+
+      <div>
+        <p class="dim text-small mb-1" style="text-transform:uppercase;letter-spacing:0.1em;">Memory comparison</p>
+
+        <div class="bar-chart">
+          <div class="bar-row">
+            <div class="bar-label">PyTorch</div>
+            <div class="bar-track">
+              <div class="bar-fill" style="width:100%; background:var(--accent-red);">192 MB</div>
+            </div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">v2</div>
+            <div class="bar-track">
+              <div class="bar-fill" style="width:66.7%; background:var(--accent-orange);">128 MB</div>
+            </div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">Unsloth</div>
+            <div class="bar-track">
+              <div class="bar-fill" style="width:50%; background:var(--accent-gray);">96 MB</div>
+            </div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label" style="color:var(--accent-green);">v2_2</div>
+            <div class="bar-track">
+              <div class="bar-fill" style="width:50.5%; background:var(--accent-green);">97 MB ✓</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card green-border mt-2">
+          <table class="text-small">
+            <tr><th>Rank</th><th>Unsloth</th><th>v2_2</th><th>Ratio</th><th>Memory</th></tr>
+            <tr><td>8</td><td>2.335ms</td><td class="best">1.954ms</td><td class="best">1.20×</td><td>97 MB</td></tr>
+            <tr><td>16</td><td>2.010ms</td><td class="best">1.862ms</td><td class="best">1.08×</td><td>97 MB</td></tr>
+            <tr><td>32</td><td>2.034ms</td><td class="best">1.898ms</td><td class="best">1.07×</td><td>97 MB</td></tr>
+            <tr><td>64</td><td>2.039ms</td><td class="best">1.910ms</td><td class="best">1.07×</td><td>97 MB</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 6: V2_3 — FULLY PACKED QKV
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="6">
+  <div class="slide-inner">
+    <h3>v2_3 — The Best Forward Kernel</h3>
+    <h2>Fully Packed QKV: Single cuBLAS Call <span class="tag green">best</span></h2>
+
+    <div class="cols" style="margin-top:16px;">
+      <div>
+        <p>Pack <strong>all 6 weight matrices</strong> into one tall matrix:</p>
+
+        <div class="flow">
+          <div class="flow-box input" style="width:300px;">
+            <strong>Input X</strong>
+            <small>[M, 4096] — read from HBM <strong style="color:var(--accent-green);">once</strong></small>
+          </div>
+          <div class="flow-arrow"></div>
+          <div class="flow-box" style="border-color:var(--accent-orange); width:380px;">
+            <strong>Pack ALL weights</strong>
+            <small>W<sub>all</sub> = [W<sub>q</sub> ; A<sub>q</sub> ; W<sub>k</sub> ; A<sub>k</sub> ; W<sub>v</sub> ; A<sub>v</sub>]</small>
+            <small style="color:var(--accent-orange);">[4096+r+1024+r+1024+r, 4096] = [6192, 4096]</small>
+          </div>
+          <div class="flow-arrow"></div>
+          <div class="flow-box cublas" style="width:380px;">
+            <strong style="font-size:1.1rem;">ONE cuBLAS GEMM</strong>
+            <small>out_all = X @ W<sub>all</sub><sup>T</sup> → [M, 6192]</small>
+            <small style="color:var(--accent-blue);">Launch 1 of 2</small>
+          </div>
+          <div class="flow-arrow"></div>
+          <div class="flow-box triton" style="width:380px;">
+            <strong style="font-size:1.1rem;">ONE Triton Epilogue</strong>
+            <small>Split + LoRA addition for all Q, K, V in-place</small>
+            <small style="color:var(--accent-green);">Launch 2 of 2</small>
+          </div>
+          <div class="flow-arrow"></div>
+          <div style="display:flex; gap:12px;">
+            <div class="flow-box output">Q <small>[M, 4096]</small></div>
+            <div class="flow-box output">K <small>[M, 1024]</small></div>
+            <div class="flow-box output">V <small>[M, 1024]</small></div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card green-border">
+          <p class="big-number highlight-green">1.26×</p>
+          <p class="bright" style="font-size:1.1rem;">Best result: 26% faster than Unsloth</p>
+          <p class="dim mt-1">1.777 ms vs 2.035 ms (rank=16)</p>
+
+          <table class="mt-2 text-small">
+            <tr><th>Rank</th><th>Unsloth</th><th>v2_3</th><th>Ratio</th></tr>
+            <tr><td>8</td><td>2.335ms</td><td class="best">1.847ms</td><td class="best">1.26×</td></tr>
+            <tr><td>16</td><td>2.010ms</td><td class="best">1.777ms</td><td class="best">1.13×</td></tr>
+            <tr><td>32</td><td>2.034ms</td><td class="best">1.809ms</td><td class="best">1.12×</td></tr>
+            <tr><td>64</td><td>2.039ms</td><td class="best">1.792ms</td><td class="best">1.14×</td></tr>
+          </table>
+        </div>
+
+        <div style="display:flex; gap:16px; margin-top:12px;">
+          <div class="card" style="flex:1; text-align:center; padding:14px;">
+            <p class="big-number highlight-green" style="font-size:2.2rem;">2</p>
+            <p class="text-small dim">launches<br><span class="text-xs">(vs 9)</span></p>
+          </div>
+          <div class="card" style="flex:1; text-align:center; padding:14px;">
+            <p class="big-number highlight-green" style="font-size:2.2rem;">1×</p>
+            <p class="text-small dim">X reads<br><span class="text-xs">(vs 6×)</span></p>
+          </div>
+          <div class="card" style="flex:1; text-align:center; padding:14px;">
+            <p class="big-number highlight-green" style="font-size:2.2rem;">97</p>
+            <p class="text-small dim">MB memory<br><span class="text-xs">(≈ Unsloth)</span></p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 7: SIDE-BY-SIDE COMPARISON
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="7">
+  <div class="slide-inner">
+    <h3>Visual Comparison</h3>
+    <h2>Unsloth (9 launches) vs v2_3 (2 launches)</h2>
+
+    <div class="vs-container" style="margin-top:24px;">
+      <div class="vs-side">
+        <h3 style="color:var(--accent-gray); font-size:1.1rem; letter-spacing:0;">Unsloth <span class="tag gray">2.035 ms</span></h3>
+        <div style="margin-top:8px;">
+          <p class="text-small dim mb-1">Q projection — reads X twice</p>
+          <div class="launch-grid">
+            <div class="launch-box xw" style="width:90px;">X @ W<sub>q</sub><sup>T</sup></div>
+            <div class="launch-box xa" style="width:90px;">X @ A<sub>q</sub><sup>T</sup></div>
+            <div class="launch-box addmm" style="width:90px;">addmm_</div>
+          </div>
+          <p class="text-small dim mb-1 mt-1">K projection — reads X twice</p>
+          <div class="launch-grid">
+            <div class="launch-box xw" style="width:90px;">X @ W<sub>k</sub><sup>T</sup></div>
+            <div class="launch-box xa" style="width:90px;">X @ A<sub>k</sub><sup>T</sup></div>
+            <div class="launch-box addmm" style="width:90px;">addmm_</div>
+          </div>
+          <p class="text-small dim mb-1 mt-1">V projection — reads X twice</p>
+          <div class="launch-grid">
+            <div class="launch-box xw" style="width:90px;">X @ W<sub>v</sub><sup>T</sup></div>
+            <div class="launch-box xa" style="width:90px;">X @ A<sub>v</sub><sup>T</sup></div>
+            <div class="launch-box addmm" style="width:90px;">addmm_</div>
+          </div>
+        </div>
+        <div class="card mt-2" style="padding:12px 16px; text-align:center;">
+          <span class="highlight-red">9 launches</span> &bull; <span class="highlight-red">6× X reads</span> &bull; 96 MB
+        </div>
+      </div>
+
+      <div class="vs-divider">
+        <div class="vs-label">vs</div>
+      </div>
+
+      <div class="vs-side">
+        <h3 style="color:var(--accent-green); font-size:1.1rem; letter-spacing:0;">v2_3 (Ours) <span class="tag green">1.777 ms</span></h3>
+        <div style="margin-top:8px;">
+          <p class="text-small dim mb-1">ALL projections — reads X once</p>
+          <div class="launch-grid" style="gap:10px;">
+            <div class="launch-box cublas-big" style="width:290px; height:80px; font-size:0.85rem; flex-direction:column; display:flex; align-items:center; justify-content:center; border-radius:8px;">
+              <strong>X @ W<sub>all</sub><sup>T</sup></strong>
+              <span style="font-size:0.72rem; opacity:0.8;">cuBLAS GEMM — Q+A<sub>q</sub>+K+A<sub>k</sub>+V+A<sub>v</sub></span>
+            </div>
+          </div>
+          <div class="launch-grid mt-1" style="gap:10px;">
+            <div class="launch-box triton-ep" style="width:290px; height:60px; font-size:0.85rem; flex-direction:column; display:flex; align-items:center; justify-content:center; border-radius:8px;">
+              <strong>Fused Triton Epilogue</strong>
+              <span style="font-size:0.72rem; opacity:0.8;">Split + LoRA for Q, K, V in-place</span>
+            </div>
+          </div>
+        </div>
+        <div class="card mt-2 green-border" style="padding:12px 16px; text-align:center;">
+          <span class="highlight-green">2 launches</span> &bull; <span class="highlight-green">1× X read</span> &bull; 97 MB
+        </div>
+      </div>
+    </div>
+
+    <div style="text-align:center; margin-top:16px;">
+      <p style="font-size:1.3rem;"><span class="highlight-green">4.5× fewer launches</span>, <span class="highlight-green">6× fewer X reads</span>, same memory</p>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 8: V3 — TRAINING READY
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="8">
+  <div class="slide-inner">
+    <h3>v3 — Production Ready</h3>
+    <h2>Training Support: autograd.Function <span class="tag gold">trainable</span></h2>
+
+    <div class="cols" style="margin-top:16px;">
+      <div>
+        <p>Wraps v2_3 in <span class="mono">torch.autograd.Function</span> with a custom backward pass:</p>
+
+        <div class="flow" style="margin-top:16px;">
+          <div class="flow-box" style="border-color:var(--accent-gold); width:340px;">
+            <strong style="color:var(--accent-gold);">Forward (v2_3)</strong>
+            <small>1 cuBLAS + 1 Triton = 2 launches</small>
+            <small>X read once, LoRA in-place</small>
+          </div>
+          <div class="flow-arrow"></div>
+          <div class="flow-box" style="border-color:var(--accent-purple); width:340px;">
+            <strong style="color:var(--accent-purple);">save_for_backward</strong>
+            <small>X, A<sub>q</sub>, A<sub>k</sub>, A<sub>v</sub>, B<sub>q</sub>, B<sub>k</sub>, B<sub>v</sub>, W<sub>packed</sub></small>
+          </div>
+          <div class="flow-arrow"></div>
+          <div class="flow-box" style="border-color:var(--accent-gold); width:340px;">
+            <strong style="color:var(--accent-gold);">Backward</strong>
+            <small>cuBLAS addmm_ chain (follows Unsloth's pattern)</small>
+            <small>Gradients: dX, dA<sub>q</sub>, dB<sub>q</sub>, dA<sub>k</sub>, dB<sub>k</sub>, dA<sub>v</sub>, dB<sub>v</sub></small>
+          </div>
+        </div>
+
+        <div class="card gold-border mt-2">
+          <p style="margin:0;"><strong style="color:var(--accent-gold);">Correctness:</strong></p>
+          <p class="text-small dim" style="margin:6px 0 0;">
+            ✓ <span class="mono">torch.autograd.gradcheck</span> passes in fp64<br>
+            ✓ MHA, GQA, 3D inputs, all ranks (8–64)<br>
+            ✓ Backward matches PyTorch reference within rtol=1e-3
+          </p>
+        </div>
+
+        <p class="dim text-small mt-2">Falls back to plain PyTorch for fp64 (gradcheck compatibility only — no perf impact in production bf16).</p>
+      </div>
+
+      <div>
+        <p class="dim text-small mb-1" style="text-transform:uppercase;letter-spacing:0.1em;">Forward + Backward (full training step)</p>
+
+        <div class="card gold-border">
+          <table>
+            <tr><th>Rank</th><th>Unsloth</th><th>v3</th><th>Speedup</th></tr>
+            <tr><td>8</td><td>5.012ms</td><td class="best">4.639ms</td><td class="best">1.08×</td></tr>
+            <tr><td>16</td><td>5.076ms</td><td class="best">4.693ms</td><td class="best">1.08×</td></tr>
+            <tr><td>32</td><td>5.033ms</td><td class="best">4.632ms</td><td class="best">1.09×</td></tr>
+            <tr><td>64</td><td>5.054ms</td><td class="best">4.722ms</td><td class="best">1.07×</td></tr>
+          </table>
+        </div>
+
+        <div class="lesson-box green mt-2">
+          <div class="lesson-icon">✓</div>
+          <div class="lesson-text">
+            <strong>Why backward beats Unsloth:</strong> v3's forward reads X once (vs Unsloth's 6 reads). The backward is identical to Unsloth's addmm_ pattern, so the net gain comes entirely from the faster forward.
+          </div>
+        </div>
+
+        <p class="dim text-small mt-2"><strong>Future:</strong> Fusing the backward pass (packing dW computation) could push training speedup to 1.15×+.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 9: CROSS-VERSION COMPARISON
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide dense" data-slide="9">
+  <div class="slide-inner">
+    <h3>The Journey</h3>
+    <h2>Cross-Version Comparison</h2>
+
+    <table style="margin-top:16px;">
+      <tr>
+        <th>Version</th>
+        <th>Key Idea</th>
+        <th>Launches</th>
+        <th>X Reads</th>
+        <th>r=8</th>
+        <th>r=16</th>
+        <th>r=32</th>
+        <th>r=64</th>
+        <th>Memory</th>
+        <th>vs Unsloth</th>
+      </tr>
+      <tr>
+        <td><span class="tag gray">PyTorch</span></td>
+        <td class="dim">Naive separate ops</td>
+        <td class="dim">9+</td>
+        <td class="dim">6×</td>
+        <td class="dim">2.240ms</td>
+        <td class="dim">2.285ms</td>
+        <td class="dim">2.282ms</td>
+        <td class="dim">2.297ms</td>
+        <td class="dim">192 MB</td>
+        <td class="dim">0.89×</td>
+      </tr>
+      <tr>
+        <td><span class="tag gray">Unsloth</span></td>
+        <td>addmm_ per projection</td>
+        <td>9</td>
+        <td>6×</td>
+        <td>2.014ms</td>
+        <td>2.035ms</td>
+        <td>2.057ms</td>
+        <td>2.044ms</td>
+        <td>96 MB</td>
+        <td class="baseline">1.00×</td>
+      </tr>
+      <tr>
+        <td><span class="tag red">v1</span></td>
+        <td>All-Triton fused</td>
+        <td>3</td>
+        <td>6×</td>
+        <td class="worst">2.921ms</td>
+        <td class="worst">2.895ms</td>
+        <td class="worst">3.001ms</td>
+        <td class="worst">3.593ms</td>
+        <td>96 MB</td>
+        <td class="worst">0.70×</td>
+      </tr>
+      <tr>
+        <td><span class="tag blue">v2</span></td>
+        <td>Packed W+A per proj</td>
+        <td>6</td>
+        <td>3×</td>
+        <td class="best">1.927ms</td>
+        <td class="best">1.869ms</td>
+        <td class="best">1.856ms</td>
+        <td class="best">1.924ms</td>
+        <td style="color:var(--accent-orange);">128 MB</td>
+        <td class="best">1.09×</td>
+      </tr>
+      <tr>
+        <td><span class="tag green">v2_2</span></td>
+        <td>In-place + fused epilogue</td>
+        <td>4</td>
+        <td>3×</td>
+        <td class="best">1.954ms</td>
+        <td class="best">1.862ms</td>
+        <td class="best">1.898ms</td>
+        <td class="best">1.910ms</td>
+        <td class="best">97 MB</td>
+        <td class="best">1.08×</td>
+      </tr>
+      <tr class="highlight-row">
+        <td><span class="tag green">v2_3</span></td>
+        <td><strong>Fully packed QKV</strong></td>
+        <td><strong>2</strong></td>
+        <td><strong>1×</strong></td>
+        <td class="best"><strong>1.847ms</strong></td>
+        <td class="best"><strong>1.777ms</strong></td>
+        <td class="best"><strong>1.809ms</strong></td>
+        <td class="best"><strong>1.792ms</strong></td>
+        <td class="best"><strong>97 MB</strong></td>
+        <td class="best"><strong>1.13×</strong></td>
+      </tr>
+      <tr>
+        <td><span class="tag gold">v3</span></td>
+        <td>+ backward pass</td>
+        <td>2 (fwd)</td>
+        <td>1× (fwd)</td>
+        <td class="best">1.867ms</td>
+        <td class="best">1.800ms</td>
+        <td class="best">1.825ms</td>
+        <td class="best">1.819ms</td>
+        <td class="best">97 MB</td>
+        <td class="best">1.12×</td>
+      </tr>
+    </table>
+
+    <p class="dim text-small mt-1">All timings: bf16, LLaMA-3 8B GQA (32q/8kv), batch=4, seq=2048, hidden=4096, A100-SXM4-80GB</p>
+
+    <div style="margin-top:24px;">
+      <p class="dim text-small mb-1" style="text-transform:uppercase; letter-spacing:0.1em;">Progression (rank=16, forward time)</p>
+      <div class="bar-chart">
+        <div class="bar-row">
+          <div class="bar-label" style="width:55px;">v1</div>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:80%; background:var(--accent-red);">2.895 ms</div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label" style="width:55px;">PyTorch</div>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:63%; background:var(--accent-gray);">2.285 ms</div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label" style="width:55px;">Unsloth</div>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:56%; background:var(--accent-gray);">2.035 ms</div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label" style="width:55px;">v2_2</div>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:51.5%; background:var(--accent-green);">1.862 ms</div>
+          </div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label" style="width:55px; color:var(--accent-green);">v2_3</div>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:49%; background:linear-gradient(90deg, var(--accent-blue), var(--accent-green));">1.777 ms ★</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 10: KEY INSIGHTS
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="10">
+  <div class="slide-inner">
+    <h3>Takeaways</h3>
+    <h2>Key Insights</h2>
+
+    <div class="cols" style="margin-top:16px;">
+      <div>
+        <ol class="insight-list">
+          <li>
+            <div class="insight-num" style="background:var(--accent-red);">1</div>
+            <div class="insight-text">
+              <strong>"Don't compete with cuBLAS"</strong><br>
+              <span class="dim">Use cuBLAS for large matmuls (where it excels), Triton only for cheap fusion/epilogues. Triton matmul tops out at ~60% cuBLAS throughput for large GEMMs.</span>
+            </div>
+          </li>
+          <li>
+            <div class="insight-num" style="background:var(--accent-blue);">2</div>
+            <div class="insight-text">
+              <strong>"Pack weights to reduce X reads"</strong><br>
+              <span class="dim">Concatenating W and A (and across projections) turns 6 X reads into 1. At 64 MB per read, this saves 320 MB of HBM bandwidth.</span>
+            </div>
+          </li>
+          <li>
+            <div class="insight-num" style="background:var(--accent-green);">3</div>
+            <div class="insight-text">
+              <strong>"LoRA rank is tiny — exploit it"</strong><br>
+              <span class="dim">The [r, BLOCK_N] dot product in the Triton epilogue fits entirely in registers. r=16 means 16 rows — essentially free compute. The LoRA addition costs almost nothing.</span>
+            </div>
+          </li>
+        </ol>
+      </div>
+      <div>
+        <ol class="insight-list">
+          <li>
+            <div class="insight-num" style="background:var(--accent-orange);">4</div>
+            <div class="insight-text">
+              <strong>"addmm_ isn't always optimal"</strong><br>
+              <span class="dim">Unsloth's addmm_ is clever (in-place), but it forces a separate cuBLAS call for X@A. A single packed GEMM + Triton epilogue is faster because it avoids re-reading X.</span>
+            </div>
+          </li>
+          <li>
+            <div class="insight-num" style="background:var(--accent-gold);">5</div>
+            <div class="insight-text">
+              <strong>"Memory matters — go in-place"</strong><br>
+              <span class="dim">v2 was faster but used 33% more memory. The in-place epilogue (v2_2+) writes directly into the packed buffer, matching Unsloth's 96 MB footprint.</span>
+            </div>
+          </li>
+          <li>
+            <div class="insight-num" style="background:var(--accent-purple);">6</div>
+            <div class="insight-text">
+              <strong>"Wide GEMMs don't hurt cuBLAS"</strong><br>
+              <span class="dim">We feared [M, 6192] output might trigger cuBLAS algorithm-selection penalties. It doesn't — v2_3 is faster than v2 (3 narrower GEMMs). Validated empirically.</span>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 11: ARCHITECTURE DIAGRAM
+     ════════════════════════════════════════════════════════════════ -->
+<div class="slide" data-slide="11">
+  <div class="slide-inner">
+    <h3>Final Design</h3>
+    <h2>System Architecture — v2_3 / v3</h2>
+
+    <div style="display:flex; justify-content:center; margin-top:24px;">
+      <div class="arch-diagram">
+
+        <div class="arch-box purple">
+          <div class="label">Input X</div>
+          <div class="detail">[M, 4096] &nbsp;—&nbsp; M = batch × seq = 8192</div>
+          <div class="detail" style="color:var(--accent-purple);">64 MB in bf16 &nbsp;·&nbsp; Read from HBM exactly once</div>
+        </div>
+
+        <div class="arch-arrow"></div>
+        <div class="arch-label">pre-packed (done once at init)</div>
+
+        <div class="arch-box" style="border-color:var(--accent-orange);">
+          <div class="label" style="color:var(--accent-orange);">W<sub>all</sub> = [ W<sub>q</sub> ; A<sub>q</sub> ; W<sub>k</sub> ; A<sub>k</sub> ; W<sub>v</sub> ; A<sub>v</sub> ]</div>
+          <div class="detail">[6192, 4096] in bf16</div>
+          <div class="detail">
+            <span style="color:var(--accent-blue);">W<sub>q</sub> [4096×4096]</span> &nbsp;
+            <span style="color:var(--accent-green);">A<sub>q</sub> [16×4096]</span> &nbsp;
+            <span style="color:var(--accent-blue);">W<sub>k</sub> [1024×4096]</span> &nbsp;
+            <span style="color:var(--accent-green);">A<sub>k</sub> [16×4096]</span> &nbsp;
+            <span style="color:var(--accent-blue);">W<sub>v</sub> [1024×4096]</span> &nbsp;
+            <span style="color:var(--accent-green);">A<sub>v</sub> [16×4096]</span>
+          </div>
+        </div>
+
+        <div class="arch-arrow"></div>
+        <div class="arch-label" style="color:var(--accent-blue);">cuBLAS GEMM — launch 1 of 2</div>
+
+        <div class="arch-box blue">
+          <div class="label">out<sub>all</sub> = X @ W<sub>all</sub><sup>T</sup></div>
+          <div class="detail">[M, 6192] &nbsp;—&nbsp; contains base outputs + XA intermediates interleaved</div>
+          <div class="detail">
+            [ base<sub>q</sub>[4096] | XA<sub>q</sub>[16] | base<sub>k</sub>[1024] | XA<sub>k</sub>[16] | base<sub>v</sub>[1024] | XA<sub>v</sub>[16] ]
+          </div>
+        </div>
+
+        <div class="arch-arrow"></div>
+        <div class="arch-label" style="color:var(--accent-green);">Triton fused epilogue — launch 2 of 2</div>
+
+        <div class="arch-box green">
+          <div class="label">Split + LoRA Addition (in-place)</div>
+          <div class="detail" style="line-height:1.8;">
+            Q = base<sub>q</sub> + s · XA<sub>q</sub> @ B<sub>q</sub><sup>T</sup> &nbsp;|&nbsp;
+            K = base<sub>k</sub> + s · XA<sub>k</sub> @ B<sub>k</sub><sup>T</sup> &nbsp;|&nbsp;
+            V = base<sub>v</sub> + s · XA<sub>v</sub> @ B<sub>v</sub><sup>T</sup>
+          </div>
+          <div class="detail" style="color:var(--accent-green);">[r, BLOCK_N] dot product fits in registers — nearly free</div>
+        </div>
+
+        <div class="arch-arrow"></div>
+
+        <div class="arch-outputs">
+          <div class="arch-out-box">
+            <div class="label">Q</div>
+            <div class="detail">[M, 4096]</div>
+            <div class="detail">32 heads</div>
+          </div>
+          <div class="arch-out-box">
+            <div class="label">K</div>
+            <div class="detail">[M, 1024]</div>
+            <div class="detail">8 heads</div>
+          </div>
+          <div class="arch-out-box">
+            <div class="label">V</div>
+            <div class="detail">[M, 1024]</div>
+            <div class="detail">8 heads</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div style="display:flex; justify-content:center; gap:32px; margin-top:20px;">
+      <div style="display:flex; align-items:center; gap:6px;"><div style="width:14px;height:14px;border-radius:3px;border:2px solid var(--accent-blue);"></div><span class="text-small">cuBLAS (heavy lifting)</span></div>
+      <div style="display:flex; align-items:center; gap:6px;"><div style="width:14px;height:14px;border-radius:3px;border:2px solid var(--accent-green);"></div><span class="text-small">Triton (cheap epilogue)</span></div>
+      <div style="display:flex; align-items:center; gap:6px;"><div style="width:14px;height:14px;border-radius:3px;border:2px solid var(--accent-orange);"></div><span class="text-small">Pre-packed weights</span></div>
+      <div style="display:flex; align-items:center; gap:6px;"><div style="width:14px;height:14px;border-radius:3px;border:2px solid var(--accent-gold);"></div><span class="text-small">Final outputs (views)</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ Slide 13: Extensive Forward Benchmarks ════════════ -->
+<div class="slide dense">
+  <div class="slide-inner">
+    <h1 style="font-size:2rem;">📊 Forward Benchmark — All Configurations</h1>
+    <p class="subtitle" style="margin-bottom:12px;">LLaMA-3 8B GQA (32q/8kv), bf16, A100-SXM4-80GB</p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:0.78rem;margin-bottom:18px;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--accent-blue);">
+          <th style="text-align:left;padding:6px;">Config</th>
+          <th style="text-align:left;padding:6px;">Rank</th>
+          <th style="padding:6px;color:var(--text-dim);">Unsloth</th>
+          <th style="padding:6px;color:#e74c3c;">v1</th>
+          <th style="padding:6px;color:var(--accent-blue);">v2</th>
+          <th style="padding:6px;color:var(--accent-green);">v2_2</th>
+          <th style="padding:6px;color:var(--accent-green);font-weight:bold;">v2_3</th>
+          <th style="padding:6px;color:var(--accent-gold);">v3 fwd</th>
+          <th style="padding:6px;color:var(--accent-green);font-weight:bold;">v2_3/Un</th>
+        </tr>
+      </thead>
+      <tbody style="font-family:'JetBrains Mono',monospace;">
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:4px 6px;">B=1 S=512</td><td>8</td><td>0.258</td><td>0.304</td><td>0.265</td><td>0.176</td><td style="font-weight:bold;color:var(--accent-green);">0.127</td><td>0.127</td><td style="color:var(--accent-green);font-weight:bold;">2.02×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:4px 6px;"></td><td>16</td><td>0.211</td><td>0.297</td><td>0.272</td><td>0.171</td><td style="font-weight:bold;color:var(--accent-green);">0.118</td><td>0.119</td><td style="color:var(--accent-green);font-weight:bold;">1.78×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:4px 6px;"></td><td>64</td><td>0.214</td><td>0.367</td><td>0.243</td><td>0.172</td><td style="font-weight:bold;color:var(--accent-green);">0.121</td><td>0.133</td><td style="color:var(--accent-green);font-weight:bold;">1.77×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.02);"><td style="padding:4px 6px;">B=2 S=1024</td><td>16</td><td>0.590</td><td>0.796</td><td>0.535</td><td>0.532</td><td style="font-weight:bold;color:var(--accent-green);">0.457</td><td>0.462</td><td style="color:var(--accent-green);font-weight:bold;">1.29×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:4px 6px;"></td><td>64</td><td>0.602</td><td>0.974</td><td>0.548</td><td>0.545</td><td style="font-weight:bold;color:var(--accent-green);">0.463</td><td>0.468</td><td style="color:var(--accent-green);font-weight:bold;">1.30×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(78,205,196,0.07);"><td style="padding:4px 6px;font-weight:bold;">B=4 S=2048 ★</td><td>8</td><td>2.014</td><td>2.826</td><td>1.910</td><td>1.987</td><td style="font-weight:bold;color:var(--accent-green);">1.864</td><td>1.889</td><td style="color:var(--accent-green);font-weight:bold;">1.08×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(78,205,196,0.07);"><td style="padding:4px 6px;font-weight:bold;">(primary)</td><td style="font-weight:bold;">16</td><td style="font-weight:bold;">2.031</td><td>2.938</td><td>1.879</td><td>1.905</td><td style="font-weight:bold;color:var(--accent-green);font-size:1rem;">1.789</td><td>1.809</td><td style="color:var(--accent-green);font-weight:bold;font-size:1rem;">1.14×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(78,205,196,0.07);"><td style="padding:4px 6px;"></td><td>32</td><td>2.031</td><td>2.981</td><td>1.872</td><td>1.906</td><td style="font-weight:bold;color:var(--accent-green);">1.806</td><td>1.825</td><td style="color:var(--accent-green);font-weight:bold;">1.12×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(78,205,196,0.07);"><td style="padding:4px 6px;"></td><td>64</td><td>2.048</td><td>3.633</td><td>1.908</td><td>1.930</td><td style="font-weight:bold;color:var(--accent-green);">1.835</td><td>1.878</td><td style="color:var(--accent-green);font-weight:bold;">1.12×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:4px 6px;">B=8 S=2048</td><td>16</td><td>3.850</td><td>5.879</td><td>3.724</td><td>3.882</td><td style="font-weight:bold;color:var(--accent-green);">3.709</td><td>3.632</td><td style="color:var(--accent-green);font-weight:bold;">1.04×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:4px 6px;"></td><td>64</td><td>3.887</td><td>7.276</td><td>3.864</td><td>3.900</td><td style="font-weight:bold;color:var(--accent-green);">3.671</td><td>3.746</td><td style="color:var(--accent-green);font-weight:bold;">1.06×</td></tr>
+        <tr><td style="padding:4px 6px;">B=4 S=4096</td><td>16</td><td>3.796</td><td>5.823</td><td>3.790</td><td>3.868</td><td style="font-weight:bold;color:var(--accent-green);">3.619</td><td>3.709</td><td style="color:var(--accent-green);font-weight:bold;">1.05×</td></tr>
+      </tbody>
+    </table>
+
+    <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;">
+      <div class="stat-badge" style="background:var(--accent-green);color:#000;font-size:1rem;padding:10px 20px;">Small batch: up to <strong>2.02×</strong> Unsloth</div>
+      <div class="stat-badge" style="background:var(--accent-blue);color:#fff;font-size:1rem;padding:10px 20px;">Primary config: <strong>1.14×</strong> Unsloth</div>
+      <div class="stat-badge" style="background:var(--accent-gold);color:#000;font-size:1rem;padding:10px 20px;">Large batch: <strong>1.04-1.06×</strong> Unsloth</div>
+    </div>
+    <p class="text-small" style="text-align:center;margin-top:10px;color:var(--text-dim);">All times in ms. ★ = primary benchmark config. v2_3 wins everywhere. Biggest gains at small batch (launch overhead dominates).</p>
+  </div>
+</div>
+
+<!-- ════════════ Slide 14: Fwd+Bwd Training Benchmark ════════════ -->
+<div class="slide dense">
+  <div class="slide-inner">
+    <h1 style="font-size:2rem;">🏋️ Training Benchmark — Forward + Backward</h1>
+    <p class="subtitle" style="margin-bottom:18px;">v3 (autograd.Function) vs PyTorch Reference — LLaMA-3 8B GQA, bf16, A100</p>
+
+    <table style="width:100%;max-width:900px;margin:0 auto 24px;border-collapse:collapse;font-size:0.85rem;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--accent-gold);">
+          <th style="text-align:left;padding:8px;">Config</th>
+          <th style="padding:8px;">Rank</th>
+          <th style="padding:8px;">PyTorch (ms)</th>
+          <th style="padding:8px;color:var(--accent-gold);font-weight:bold;">v3 (ms)</th>
+          <th style="padding:8px;color:var(--accent-gold);font-weight:bold;">Speedup</th>
+        </tr>
+      </thead>
+      <tbody style="font-family:'JetBrains Mono',monospace;">
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:6px 8px;">B=1 S=512</td><td>8</td><td>1.363</td><td style="color:var(--accent-gold);font-weight:bold;">1.171</td><td style="color:var(--accent-gold);font-weight:bold;">1.16×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td></td><td>16</td><td>1.644</td><td style="color:var(--accent-gold);font-weight:bold;">1.318</td><td style="color:var(--accent-gold);font-weight:bold;">1.25×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td></td><td>32</td><td>1.838</td><td style="color:var(--accent-gold);font-weight:bold;">0.973</td><td style="color:var(--accent-gold);font-weight:bold;">1.89×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.1);"><td></td><td>64</td><td>1.490</td><td style="color:var(--accent-gold);font-weight:bold;">1.188</td><td style="color:var(--accent-gold);font-weight:bold;">1.25×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:6px 8px;">B=2 S=1024</td><td>16</td><td>1.808</td><td style="color:var(--accent-gold);font-weight:bold;">1.413</td><td style="color:var(--accent-gold);font-weight:bold;">1.28×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.1);"><td></td><td>64</td><td>1.753</td><td style="color:var(--accent-gold);font-weight:bold;">1.363</td><td style="color:var(--accent-gold);font-weight:bold;">1.29×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(255,215,0,0.06);"><td style="padding:6px 8px;font-weight:bold;">B=4 S=2048 ★</td><td>8</td><td>5.641</td><td style="color:var(--accent-gold);font-weight:bold;">4.576</td><td style="color:var(--accent-gold);font-weight:bold;">1.23×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(255,215,0,0.06);"><td style="font-weight:bold;">(primary)</td><td style="font-weight:bold;">16</td><td style="font-weight:bold;">5.761</td><td style="color:var(--accent-gold);font-weight:bold;font-size:1.1rem;">4.585</td><td style="color:var(--accent-gold);font-weight:bold;font-size:1.1rem;">1.26×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);background:rgba(255,215,0,0.06);"><td></td><td>32</td><td>5.674</td><td style="color:var(--accent-gold);font-weight:bold;">4.505</td><td style="color:var(--accent-gold);font-weight:bold;">1.26×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.1);background:rgba(255,215,0,0.06);"><td></td><td>64</td><td>5.781</td><td style="color:var(--accent-gold);font-weight:bold;">4.631</td><td style="color:var(--accent-gold);font-weight:bold;">1.25×</td></tr>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.06);"><td style="padding:6px 8px;">B=8 S=2048</td><td>16</td><td>10.794</td><td style="color:var(--accent-gold);font-weight:bold;">9.024</td><td style="color:var(--accent-gold);font-weight:bold;">1.20×</td></tr>
+        <tr><td></td><td>64</td><td>10.978</td><td style="color:var(--accent-gold);font-weight:bold;">9.025</td><td style="color:var(--accent-gold);font-weight:bold;">1.22×</td></tr>
+      </tbody>
+    </table>
+
+    <div style="display:flex;gap:24px;justify-content:center;flex-wrap:wrap;">
+      <div class="stat-badge" style="background:var(--accent-gold);color:#000;font-size:1.1rem;padding:12px 24px;">Primary config fwd+bwd: <strong>1.26× faster</strong> than PyTorch</div>
+      <div class="stat-badge" style="background:rgba(255,215,0,0.15);border:2px solid var(--accent-gold);color:var(--accent-gold);font-size:1.1rem;padding:12px 24px;">Peak: <strong>1.89×</strong> at small batch r=32</div>
+    </div>
+    <p class="text-small" style="text-align:center;margin-top:12px;color:var(--text-dim);">v3 uses v2_3 (packed cuBLAS + epilogue) for forward, addmm_-based backward. gradcheck verified in fp64.</p>
+  </div>
+</div>
+
+<!-- ════════════ Slide 15: Memory Benchmark ════════════ -->
+<div class="slide">
+  <div class="slide-inner" style="text-align:center;">
+    <h1 style="font-size:2rem;">💾 Memory Benchmark</h1>
+    <p class="subtitle" style="margin-bottom:30px;">Peak forward allocation delta (rank=16, bf16, A100)</p>
+
+    <div style="display:flex;gap:40px;justify-content:center;align-items:end;margin-bottom:30px;">
+      <!-- Memory bars -->
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--text-dim);">6.0 MB</div>
+        <div style="width:80px;height:30px;background:var(--text-dim);border-radius:4px;"></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--text-dim);">8.0 MB</div>
+        <div style="width:80px;height:40px;background:var(--accent-blue);border-radius:4px;"></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--text-dim);">6.5 MB</div>
+        <div style="width:80px;height:33px;background:var(--accent-green);border-radius:4px;"></div>
+        <div class="text-small" style="margin-top:4px;">B=1 S=512</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--text-dim);">96 MB</div>
+        <div style="width:80px;height:96px;background:var(--text-dim);border-radius:4px;"></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--accent-blue);">128 MB</div>
+        <div style="width:80px;height:128px;background:var(--accent-blue);border-radius:4px;"></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--accent-green);font-weight:bold;">97 MB</div>
+        <div style="width:80px;height:97px;background:var(--accent-green);border-radius:4px;"></div>
+        <div class="text-small" style="margin-top:4px;">B=4 S=2048 ★</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--text-dim);">193 MB</div>
+        <div style="width:80px;height:97px;background:var(--text-dim);border-radius:4px;"></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--accent-blue);">257 MB</div>
+        <div style="width:80px;height:128px;background:var(--accent-blue);border-radius:4px;"></div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:0.85rem;color:var(--accent-green);font-weight:bold;">194 MB</div>
+        <div style="width:80px;height:97px;background:var(--accent-green);border-radius:4px;"></div>
+        <div class="text-small" style="margin-top:4px;">B=8 S=2048</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:32px;justify-content:center;margin-bottom:20px;">
+      <div style="display:flex;align-items:center;gap:8px;"><div style="width:16px;height:16px;border-radius:3px;background:var(--text-dim);"></div><span>Unsloth</span></div>
+      <div style="display:flex;align-items:center;gap:8px;"><div style="width:16px;height:16px;border-radius:3px;background:var(--accent-blue);"></div><span>v2 (33% more — packed output coexists)</span></div>
+      <div style="display:flex;align-items:center;gap:8px;"><div style="width:16px;height:16px;border-radius:3px;background:var(--accent-green);"></div><span>v2_3 (matches Unsloth — in-place epilogue)</span></div>
+    </div>
+
+    <div style="background:rgba(78,205,196,0.1);border:1px solid var(--accent-green);border-radius:10px;padding:16px 24px;max-width:700px;margin:0 auto;">
+      <p style="margin:0;font-size:1.05rem;">v2_3 matches Unsloth's memory footprint while being <strong style="color:var(--accent-green);">1.14× faster</strong> at the primary config. No tradeoff needed.</p>
+    </div>
+  </div>
+</div>
+
+</div><!-- /deck -->
+
+<!-- ── Navigation Bar ── -->
+<div class="nav-bar">
+  <button class="nav-btn" id="prev-btn" onclick="navigate(-1)">← Prev</button>
+  <div class="nav-dots" id="nav-dots"></div>
+  <span class="nav-counter" id="counter">1 / 12</span>
+  <button class="nav-btn" id="next-btn" onclick="navigate(1)">Next →</button>
+</div>
+
+<script>
+(function() {
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  let current = 0;
+
+  const progress = document.getElementById('progress');
+  const counter = document.getElementById('counter');
+  const prevBtn = document.getElementById('prev-btn');
+  const nextBtn = document.getElementById('next-btn');
+  const dotsContainer = document.getElementById('nav-dots');
+
+  // Create nav dots
+  for (let i = 0; i < total; i++) {
+    const dot = document.createElement('button');
+    dot.className = 'nav-dot' + (i === 0 ? ' active' : '');
+    dot.onclick = () => goTo(i);
+    dot.title = 'Slide ' + (i + 1);
+    dotsContainer.appendChild(dot);
+  }
+  const dots = dotsContainer.querySelectorAll('.nav-dot');
+
+  function updateUI() {
+    progress.style.width = ((current + 1) / total * 100) + '%';
+    counter.textContent = (current + 1) + ' / ' + total;
+    prevBtn.disabled = current === 0;
+    nextBtn.disabled = current === total - 1;
+    dots.forEach((d, i) => d.classList.toggle('active', i === current));
+  }
+
+  function goTo(idx) {
+    if (idx < 0 || idx >= total || idx === current) return;
+    const forward = idx > current;
+    const prev = current;
+
+    // Exit the current slide in the appropriate direction
+    slides[current].classList.remove('active');
+    slides[current].classList.add(forward ? 'exit-left' : 'exit-right');
+
+    // Prepare the new slide to enter from the correct side
+    current = idx;
+    // Briefly disable transition so we can position it off-screen
+    slides[current].style.transition = 'none';
+    slides[current].classList.add(forward ? '' : 'enter-left');
+    // Force reflow so the position takes effect before we animate
+    slides[current].offsetHeight;
+    // Re-enable transition and activate
+    slides[current].style.transition = '';
+    slides[current].classList.remove('enter-left');
+    slides[current].classList.add('active');
+    slides[current].scrollTop = 0;
+
+    // Clean up exit classes after transition
+    setTimeout(() => {
+      slides[prev].classList.remove('exit-left', 'exit-right');
+    }, 500);
+
+    updateUI();
+  }
+
+  function navigate(dir) {
+    goTo(current + dir);
+  }
+
+  // Keyboard navigation
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') {
+      e.preventDefault();
+      navigate(1);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      navigate(-1);
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      goTo(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      goTo(total - 1);
+    }
+  });
+
+  // Touch/swipe support
+  let touchStartX = 0;
+  document.addEventListener('touchstart', (e) => {
+    touchStartX = e.changedTouches[0].screenX;
+  });
+  document.addEventListener('touchend', (e) => {
+    const diff = touchStartX - e.changedTouches[0].screenX;
+    if (Math.abs(diff) > 50) {
+      navigate(diff > 0 ? 1 : -1);
+    }
+  });
+
+  // Expose navigate globally for buttons
+  window.navigate = navigate;
+  window.goTo = goTo;
+
+  updateUI();
+})();
+</script>
+</body>
+</html>

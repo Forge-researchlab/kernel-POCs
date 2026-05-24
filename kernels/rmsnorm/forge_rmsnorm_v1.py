@@ -1,4 +1,23 @@
-# These are placeholder files for testing patching.
+"""ForgeRMSNorm V1 — placeholder baseline (pre-hackathon scaffold).
+
+Llama/Qwen-style RMSNorm: y = (x * rsqrt(mean(x^2) + eps)) * weight.
+
+Properties:
+- Grid (n_rows,), one row per Triton program.
+- fp32 reduction for the rsqrt, cast back to input dtype, then apply weight.
+- Backward writes per-row-block partial dweight buffers of shape
+  (ceil(n_rows / 16), n_cols), then reduces with `dweight_partial.sum(0)` in
+  Python. Memory-suboptimal at large n_rows — replaced by v2's SM-proportional
+  partial buffer.
+- **No offset parameter** — Gemma's `(1 + weight)` path is NOT supported here.
+  Use v2 for Gemma.
+
+Kept as the comparison baseline for `forge_rmsnorm_v{2,3}.py` in the benchmark
+and evolution report. Symbol names match the original pre-rename file
+(`ForgeRMSNormv1Function`, `rmsnorm_forward`, `rmsnorm_backward`, `rmsnorm`) so
+the existing `tests/test_rmsnorm.py` keeps working via the unversioned aliases
+re-exported in `kernels/rmsnorm/__init__.py`.
+"""
 
 import torch
 import triton
@@ -10,7 +29,7 @@ BACKWARD_ROWS_PER_PROGRAM = 16
 
 
 @triton.jit
-def _rmsnorm_forward_kernel(
+def _rmsnorm_v1_forward_kernel(
     y_ptr,
     x_ptr,
     weight_ptr,
@@ -40,7 +59,7 @@ def _rmsnorm_forward_kernel(
 
 
 @triton.jit
-def _rmsnorm_backward_kernel(
+def _rmsnorm_v1_backward_kernel(
     dx_ptr,
     dweight_partial_ptr,
     dy_ptr,
@@ -125,7 +144,7 @@ def _check_inputs(x: torch.Tensor, weight: torch.Tensor) -> None:
         raise TypeError("x and weight must be floating point tensors")
 
 
-def rmsnorm_forward(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6):
+def rmsnorm_v1_forward(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6):
     _check_inputs(x, weight)
     if not x.is_cuda:
         raise RuntimeError("rmsnorm_forward requires CUDA; use rmsnorm() for the CPU fallback")
@@ -140,7 +159,7 @@ def rmsnorm_forward(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6):
     rstd = torch.empty((n_rows,), device=x.device, dtype=torch.float32)
     block_size = _block_size(n_cols)
 
-    _rmsnorm_forward_kernel[(n_rows,)](
+    _rmsnorm_v1_forward_kernel[(n_rows,)](
         y,
         x_2d,
         weight_1d,
@@ -153,7 +172,7 @@ def rmsnorm_forward(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6):
     return y.view(original_shape), x_2d, weight_1d, rstd
 
 
-def rmsnorm_backward(
+def rmsnorm_v1_backward(
     dy: torch.Tensor,
     x_2d: torch.Tensor,
     weight: torch.Tensor,
@@ -169,7 +188,7 @@ def rmsnorm_backward(
     n_row_blocks = triton.cdiv(n_rows, BACKWARD_ROWS_PER_PROGRAM)
     dweight_partial = torch.empty((n_row_blocks, n_cols), device=dy.device, dtype=torch.float32)
 
-    _rmsnorm_backward_kernel[(n_row_blocks,)](
+    _rmsnorm_v1_backward_kernel[(n_row_blocks,)](
         dx,
         dweight_partial,
         dy_2d,
@@ -187,22 +206,22 @@ def rmsnorm_backward(
     return dx.view(original_shape), dweight
 
 
-class ForgeRMSNormFunction(torch.autograd.Function):
+class ForgeRMSNormv1Function(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6):
-        y, x_2d, weight_1d, rstd = rmsnorm_forward(x, weight, eps)
+        y, x_2d, weight_1d, rstd = rmsnorm_v1_forward(x, weight, eps)
         ctx.save_for_backward(x_2d, weight_1d, rstd)
         return y
 
     @staticmethod
     def backward(ctx, dy: torch.Tensor):
         x_2d, weight, rstd = ctx.saved_tensors
-        dx, dweight = rmsnorm_backward(dy, x_2d, weight, rstd)
+        dx, dweight = rmsnorm_v1_backward(dy, x_2d, weight, rstd)
         return dx, dweight, None
 
 
-def rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+def rmsnorm_v1(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     _check_inputs(x, weight)
     if not x.is_cuda:
         return torch_rmsnorm_reference(x, weight, eps)
-    return ForgeRMSNormFunction.apply(x, weight, eps)
+    return ForgeRMSNormv1Function.apply(x, weight, eps)

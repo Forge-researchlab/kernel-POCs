@@ -95,6 +95,60 @@ The fused K-loop architecture is correct and reads X only once (vs Unsloth's 2x 
 
 ---
 
+## [v5] — 2026-05-24
+
+### Approach
+v3 (the prior best) launches 8 kernels including 4 separate cuBLAS calls that all multiply by the same input X (W_gate, W_up, A_gate, A_up). v5 packs those four matrices into a single mega-matrix `W_mega = [W_gate; W_up; A_gate; A_up]` and runs **one** cuBLAS call `result = X @ W_mega^T`, then slices the output into the four pieces. The down projection plays the same trick: `W_down_packed = [W_down; A_down]` reduces 2 cuBLAS calls into 1. The Triton fused LoRA + SwiGLU epilogue from v3 is reused unchanged. The training forward path is **4 launches** (3 cuBLAS + 1 Triton), down from v3's 8 and Unsloth's 10. For inference, `prepare_inference_weights()` merges LoRA into the base weights offline (`W_eff = W + s*B@A`), so the runtime path becomes just three cuBLAS matmuls plus a SwiGLU fusion. When CUDA ≥ 12.5 is available, the gate matmul fuses with SiLU via cublasLt's `CUBLASLT_EPILOGUE_SWISH` (zero Triton at runtime). On this host (CUDA 12.4) the kernel probes once at import time and falls back to a 4-launch path that uses Unsloth's `swiglu_fg_kernel` for the SiLU(e)*g fusion — still 4 launches, but with one Triton kernel instead of zero.
+
+### Changes
+- `experiments/v5/lora_mlp_kernel_v5.py`: full v5 implementation
+  - `pack_gate_up_weights()`, `pack_down_weights()`: weight-packing helpers
+  - `merge_lora_weights()`, `prepare_inference_weights()`: pre-merge LoRA for inference
+  - `fused_lora_swiglu()`: Triton epilogue (copy of v3's, accepts non-contiguous slices via explicit strides)
+  - `lora_mlp_v5()`: training forward, 4 launches when LoRA is enabled
+  - `lora_mlp_v5_inference()`: inference forward with cublasLt SWISH probe + fallback
+  - `LoRAMLPv5(autograd.Function)`: training forward + backward (backward identical to v3)
+  - Probe `_CUBLASLT_SWISH` at import time so missing-CUDA-12.5 hosts silently take the fallback path
+- `tests/test_lora_mlp.py`: new `TestV5` class with 17 tests (forward fp32/bf16, rank sweep 8/16/32/64, vs Unsloth, inference fp32/bf16, fp64 gradcheck, bf16 backward vs reference, no-LoRA, non-power-of-2, 2D/3D inputs, LLaMA-8B/13B shapes). Also fixed 6 pre-existing v3 epilogue-unit tests that were broken because `fused_lora_swiglu` returns a tuple — they now unpack `(out, _, _)`.
+- `benchmarks/bench_lora_mlp.py`: extended `bench_mlp` to time Unsloth, v3, v5 training (with pre-packed weights), and v5 inference (with pre-merged weights) in one pass; CSV columns now include `v3_ms`, `v5_train_ms`, `v5_inf_ms`, and the four corresponding speedup ratios. Output CSV is named `v5_<timestamp>.csv`.
+
+### Results
+
+**LLaMA-8B forward (bf16, batch=4, seq=2048, rank=16, M=8192, H=4096, I=14336):**
+
+| Implementation | Time (ms) | vs Unsloth | vs v3 | Launches |
+|----------------|-----------|------------|-------|----------|
+| Unsloth `apply_lora_mlp_swiglu` | 12.85 | 1.00x | — | 10 |
+| v3 (cuBLAS + Triton epilogue) | 12.35 | 1.04x | 1.00x | 8 |
+| **v5 training (packed)** | **12.36** | **1.04x** | **1.00x** | **4** |
+| **v5 inference (pre-merged)** | **11.79** | **1.09x** | **1.05x** | **4** |
+
+**Rank scaling at LLaMA-8B (bf16, batch=4, seq=2048):**
+
+| Rank | Unsloth (ms) | v3 (ms) | v5 train (ms) | v5 inf (ms) | v5 inf vs v3 |
+|------|-------------:|--------:|--------------:|------------:|-------------:|
+| 8 | 12.58 | 12.43 | 12.66 | 11.92 | 1.04x |
+| 16 | 12.85 | 12.35 | 12.36 | 11.79 | 1.05x |
+| 32 | 12.71 | 12.29 | 12.61 | 11.91 | 1.03x |
+| 64 | 12.90 | 12.50 | 12.65 | 11.82 | 1.06x |
+
+Full sweep CSV: `benchmarks/results/v5_20260524_104637.csv`.
+
+### Key Finding
+Packing **did not** materially speed up training over v3 (12.36 vs 12.35 ms at LLaMA-8B / r=16; basically a wash across the rank sweep). The reason is that on A100, cuBLAS already pipelines the four small launches that v5 fuses into one — the host-side launch overhead at this scale is negligible compared to the ~12 ms of GEMM compute, so cutting 8 → 4 launches buys nothing measurable. The launch-count argument only pays back on hosts with high host→device latency, on much smaller M (where launch overhead dominates), or in CUDA Graph–captured paths (not exercised here).
+
+The inference path **does** show a small but consistent ~5% win over v3 (11.79 vs 12.35 ms). That gain comes from skipping the four LoRA-A skinny matmuls and the LoRA-B `addmm_` updates entirely — those operations are bandwidth-bound and disappear cleanly when the LoRA is pre-merged into the base weights. This is the inherent inference-time advantage of LoRA-adapted models, not a Triton-kernel improvement.
+
+A small smaller-shape config (b=1, s=2048, r=8) shows v5_train at 1.19x vs v3 (3.06 vs 3.62 ms) — confirming that packing does help when launch overhead is a larger fraction of the total. At LLaMA-8B training scale that regime never kicks in.
+
+### Limitations
+- **CUDA 12.5+ requirement not met on this host.** `CUBLASLT_EPILOGUE_SWISH` (added in CUDA 12.5) was the linchpin of the original "zero Triton at inference" goal: gate matmul + SiLU fused into one cublasLt call. This box runs CUDA 12.4, so the import-time probe disables that path and v5_inference falls back to a separate `gate` cuBLAS matmul + Unsloth's `swiglu_fg_kernel`. The fallback is still 4 launches, but it includes 1 Triton kernel instead of 0. Numbers above are with the fallback path. On CUDA 12.5+ hosts, expect a small additional speedup on inference because (a) the Triton kernel is replaced by a cublasLt SWISH epilogue that runs concurrently with the matmul write-out, and (b) one fewer kernel launch.
+- **v4 cublasLt wrapper has incorrect attribute enum IDs.** `experiments/v4/cublaslt_wrapper.py` hardcodes `TRANSA=0`, `TRANSB=1`, `EPILOGUE=2`, but the correct CUDA values are 3, 4, and 7 respectively. v5 sidesteps this by probing the SWISH path at import and never calling the wrapper on CUDA < 12.5 (where the call would fail anyway). Fixing v4 is left as a separate task per the project's "never modify a previous version" rule.
+- **Backward unchanged from v3.** Packing only helps the forward path because each backward matmul has a different input (dY, df, de, X) — there is no shared input X to reuse. Backward still uses Unsloth's optimized in-place buffer-reuse pattern from v3, which is already near-optimal.
+- **Mega-GEMM output is non-contiguous in N.** Slices like `result[:, :I]` are stride-`(2*I+2*r, 1)` rather than stride-`(I, 1)`. The Triton epilogue handles this via explicit `stride_em / stride_en` arguments. The down-projection `out_slice` has to be `.contiguous()`-copied before in-place `addmm_` for the LoRA-B term, which adds one O(M·H) write — but this is dwarfed by the matmul time at LLaMA scale.
+
+---
+
 ## [v3] — 2026-05-23
 
 ### Approach

@@ -1,0 +1,337 @@
+# Performance Analysis & Bottleneck Identification Skill
+
+> Generic skill for analyzing kernel performance, identifying bottlenecks,
+> and recommending next optimizations. Usable across any kernel project.
+
+## When to Use
+
+- After any benchmark run completes
+- When user asks "why is this slow?" or "what should I optimize next?"
+- When a new version shows unexpected regression
+- When comparing against baseline implementations
+- Periodically to assess overall project progress
+
+## Workflow
+
+### Step 1: Gather Context
+
+Read all relevant data before analyzing:
+
+1. **Latest kernel code**: `experiments/v{N}/{KERNEL_NAME}_kernel_v{N}_{M}.py`
+   - Understand the algorithmic approach
+   - Count operations, memory accesses, kernel launches
+
+2. **Baseline code**: `docs/artifacts/` and `reference/{KERNEL_NAME}_pytorch.py`
+   - What operations does the baseline perform?
+   - How many kernel launches? How many HBM round-trips?
+
+3. **Benchmark results**: `benchmarks/results/*.csv` (most recent)
+   - Latest timing numbers for our kernel
+   - Baseline timing numbers
+   - Across which shapes/ranks was it tested?
+
+4. **Benchmark log**: `docs/benchmarks.md`
+   - Historical performance trajectory
+   - What's improved, what hasn't
+
+5. **Previous analysis reports**: `docs/analysis/*.md`
+   - Don't repeat work already done
+   - Build on previous findings
+
+### Step 2: Operation-Level Breakdown
+
+Create a detailed comparison table:
+
+```markdown
+| Operation | Baseline (launches) | Ours (launches) | Baseline HBM R/W | Ours HBM R/W |
+|-----------|--------------------|-----------------|--------------------|---------------|
+| ...       | ...                | ...             | ...                | ...           |
+```
+
+For each operation, note:
+- Number of kernel launches
+- Bytes read from HBM
+- Bytes written to HBM
+- Whether it's compute-bound or memory-bound
+- FLOPs (theoretical)
+
+### Step 3: Bottleneck Analysis Checklist
+
+Work through these potential bottlenecks in order:
+
+#### Compute Bottlenecks
+- [ ] Is the base matmul achieving good TFLOPS? (compare to peak for the GPU)
+- [ ] Is Triton matmul competitive with cuBLAS? (target: >85% of cuBLAS)
+- [ ] Are there redundant computations that can be eliminated?
+- [ ] Is fp32 accumulation causing unnecessary register pressure?
+
+#### Memory Bandwidth Bottlenecks (HBM traffic)
+- [ ] How many times is input X read from HBM? (target: 1x per fused op)
+- [ ] Are LoRA intermediates (X@A) materialized to HBM or kept in SRAM?
+- [ ] Are large intermediates written then immediately re-read?
+- [ ] What is the arithmetic intensity (FLOPs / bytes transferred)?
+- [ ] What is the theoretical HBM traffic vs measured? (use bytes formula below)
+
+#### GPU Memory Allocation (peak memory)
+- [ ] What is peak memory allocated during forward pass? (vs baseline)
+- [ ] What is peak memory during forward + backward? (the training metric)
+- [ ] Are there unnecessary intermediate tensors that could be eliminated?
+- [ ] Is activation memory dominating? (large [M, N] intermediates)
+- [ ] Could in-place operations reduce allocations? (addmm_ pattern)
+
+#### Launch Overhead
+- [ ] Total kernel launches vs baseline?
+- [ ] At small batch/seq, does launch overhead dominate?
+- [ ] Could multiple kernels be fused into one?
+
+#### Occupancy & Parallelism
+- [ ] What's the thread block occupancy? (check register/SRAM usage)
+- [ ] Is the grid large enough to saturate the GPU?
+- [ ] Are there warp divergence issues?
+
+#### LoRA-Specific
+- [ ] Does LoRA overhead scale linearly with rank?
+- [ ] At what rank does register spilling occur?
+- [ ] Is the LoRA path compute-bound or memory-bound?
+
+### Step 3b: Memory Profiling
+
+**ALWAYS run memory profiling alongside time benchmarks.** Memory is a first-class metric.
+
+#### Peak Memory Measurement
+
+```python
+import torch
+
+def measure_memory(fn, *args, warmup=3, repeats=5):
+    """Measure peak GPU memory allocated by fn."""
+    # Warmup (includes compilation)
+    for _ in range(warmup):
+        fn(*args)
+    torch.cuda.synchronize()
+
+    # Measure
+    results = []
+    for _ in range(repeats):
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+        before = torch.cuda.memory_allocated()
+        output = fn(*args)
+        torch.cuda.synchronize()
+        peak = torch.cuda.max_memory_allocated()
+        after = torch.cuda.memory_allocated()
+
+        results.append({
+            'peak_mb': peak / 1024**2,
+            'allocated_before_mb': before / 1024**2,
+            'allocated_after_mb': after / 1024**2,
+            'delta_mb': (peak - before) / 1024**2,
+        })
+        del output
+    return results[-1]  # return last (stable) measurement
+```
+
+#### Memory Breakdown Table
+
+For each version, produce this breakdown:
+
+```markdown
+## Memory Profile: v{N} (M=8192, H=4096, GQA 32/8, rank=16, bf16)
+
+| Tensor | Shape | Size (MB) | Lifetime | Notes |
+|--------|-------|-----------|----------|-------|
+| Input X | [8192, 4096] | 64.0 | persistent | input, read-only |
+| W_q | [4096, 4096] | 32.0 | persistent | frozen weight |
+| W_k | [1024, 4096] | 8.0 | persistent | frozen weight |
+| W_v | [1024, 4096] | 8.0 | persistent | frozen weight |
+| A_q, A_k, A_v | [r, 4096] × 3 | 0.4 | persistent | LoRA A matrices |
+| B_q, B_k, B_v | [N, r] × 3 | 0.2 | persistent | LoRA B matrices |
+| Q output | [8192, 4096] | 64.0 | output | must allocate |
+| K output | [8192, 1024] | 16.0 | output | must allocate |
+| V output | [8192, 1024] | 16.0 | output | must allocate |
+| **Intermediates** | | | | |
+| XA_q (Unsloth) | [8192, 16] | 0.25 | temp | eliminated in v2 |
+| XA_k, XA_v | [8192, 16] × 2 | 0.5 | temp | eliminated in v2 |
+| W_packed (v2) | [4112, 4096] | 32.1 | reusable | v2 packed weight |
+| out_packed (v2) | [8192, 4112] | 64.3 | temp | split into Q + XA |
+| **TOTAL peak** | | **XXX MB** | | |
+```
+
+#### Comparison Table Template
+
+```markdown
+| Kernel | Peak Memory (MB) | vs Unsloth | Intermediates | Notes |
+|--------|-----------------|------------|---------------|-------|
+| PyTorch naive | XXX | — | 3× XA tensors | no fusion |
+| Unsloth | XXX | 1.00x | 3× XA (tiny) | addmm_ in-place |
+| v1 | XXX | X.XXx | none (registers) | fused K-loop |
+| v2 | XXX | X.XXx | packed output | split + epilogue |
+```
+
+#### HBM Traffic Analysis
+
+Estimate total bytes transferred for the forward pass:
+
+```python
+def estimate_hbm_traffic(M, H, H_kv, r, elem_size=2):
+    """Estimate HBM bytes for full QKV forward (bf16)."""
+    traffic = {}
+
+    # Unsloth: X read 6 times, 3 XA written+read, 3 outputs written
+    traffic['unsloth'] = (
+        6 * M * H * elem_size +         # X reads (Q_W, Q_A, K_W, K_A, V_W, V_A)
+        3 * M * r * elem_size * 2 +     # XA write + read (tiny)
+        M * H * elem_size +             # Q output
+        2 * M * H_kv * elem_size +      # K, V outputs
+        (H*H + 2*H_kv*H) * elem_size + # W reads
+        3 * r * H * elem_size +         # A reads
+        (H*r + 2*H_kv*r) * elem_size   # B reads
+    )
+
+    # v2: X read 3 times (packed), packed output written+split, epilogue
+    traffic['v2'] = (
+        3 * M * H * elem_size +         # X reads (once per packed matmul)
+        M * (H+r) * elem_size +         # Q packed output write
+        2 * M * (H_kv+r) * elem_size +  # K,V packed output writes
+        M * (H+r) * elem_size +         # Q packed read in epilogue
+        2 * M * (H_kv+r) * elem_size +  # K,V packed read in epilogue
+        M * H * elem_size +             # Q final write
+        2 * M * H_kv * elem_size        # K,V final writes
+    )
+
+    return traffic
+```
+
+### Step 4: Identify Optimization Patterns
+
+Based on bottlenecks found, suggest specific patterns:
+
+| Pattern | When to Apply | Expected Benefit |
+|---------|---------------|------------------|
+| Fuse LoRA into base matmul | X@A materialized to HBM | Eliminate 1 R/W per projection |
+| Fuse multiple projections | Same input read multiple times | Reduce X reads by N-1 |
+| Keep cuBLAS for large matmuls | Triton < 85% cuBLAS throughput | Recover matmul speed |
+| Triton epilogue fusion | Small ops after cuBLAS matmul | Eliminate intermediate writes |
+| Register-level LoRA | rank <= 16 | Zero SRAM overhead for LoRA |
+| SRAM ping-pong | rank 32-64 | Keep LoRA in shared memory |
+| Software pipelining | Memory-bound kernels | Hide latency with prefetch |
+| Tile size tuning | Suboptimal occupancy | Better SM utilization |
+
+### Step 5: Run Comparison Microbenchmarks (if needed)
+
+If the analysis suggests a specific hypothesis, design a targeted microbenchmark:
+
+```python
+# Template: isolate a single operation
+ms_op = triton.testing.do_bench(lambda: operation(...), warmup=10, rep=50)
+print(f"Operation X: {ms_op:.3f} ms")
+print(f"Achieved bandwidth: {bytes_transferred / ms_op / 1e6:.1f} GB/s")
+print(f"Achieved TFLOPS: {flops / ms_op / 1e9:.2f}")
+```
+
+### Step 6: Write Analysis Report
+
+Save to `docs/analysis/YYYY-MM-DD_v{N}_description.md` with this template:
+
+```markdown
+# Analysis: {description}
+
+**Date**: YYYY-MM-DD
+**Kernel version**: v{N}_{M}
+**Compared against**: {baseline}
+**GPU**: {GPU name}
+
+## Summary
+
+{1-2 sentence executive summary of findings}
+
+## Time Performance
+
+| Config | cuBLAS bare (ms) | Unsloth (ms) | PyTorch (ms) | Ours (ms) | vs Unsloth | vs PyTorch |
+|--------|-----------------|-------------|-------------|-----------|------------|------------|
+| ...    | ...             | ...         | ...         | ...       | ...        | ...        |
+
+## Memory Performance
+
+| Kernel | Peak Memory (MB) | Delta vs Unsloth | Intermediates | HBM Traffic (est.) |
+|--------|-----------------|-----------------|---------------|-------------------|
+| ...    | ...             | ...             | ...           | ...               |
+
+## Operation Breakdown
+
+{detailed operation-level comparison table with both time and memory}
+
+## Bottleneck Identification
+
+{which checklist items were identified as bottlenecks — separate time and memory}
+
+### Time Bottlenecks
+{...}
+
+### Memory Bottlenecks
+{...}
+
+## Recommended Next Steps
+
+1. {highest-impact optimization to try} — Expected: {X}% time / {Y}% memory improvement
+2. {second priority}
+3. {optional stretch goal}
+
+## Cross-Version Comparison
+
+| Version | Date | Fwd (ms) | Peak Mem (MB) | vs Unsloth (time) | vs Unsloth (mem) | Launches | Key Change |
+|---------|------|-----------|--------------|-------------------|-----------------|----------|------------|
+| ...     | ...  | ...       | ...          | ...               | ...             | ...      | ...        |
+```
+
+### Step 7: Cross-Version Comparison Table
+
+ALWAYS include a table comparing ALL versions against ALL baselines:
+
+```markdown
+| Kernel | Time (ms) | vs Baseline | Launches (fwd) | Key Change |
+|--------|-----------|-------------|----------------|------------|
+| Baseline (unsloth/pytorch) | X.XX | 1.00x | N | — |
+| v1 | X.XX | X.XXx | N | {approach} |
+| v1_2 | X.XX | X.XXx | N | {refinement} |
+| v2 | X.XX | X.XXx | N | {approach} |
+| ... | ... | ... | ... | ... |
+```
+
+## Skill Chain (trigger other skills after analysis)
+
+After completing analysis, trigger these skills as needed:
+
+1. **→ Benchmarking Skill** (`skills/benchmarking/SKILL.mdc`): if the analysis identified
+   a hypothesis that needs targeted microbenchmarking to confirm
+2. **→ Explainer Skill** (`skills/explainer/SKILL.mdc`): if the user needs a human-readable
+   summary of where the project stands after this analysis
+3. **→ Deep Research Skill** (`skills/deep-research/SKILL.mdc`): if the bottleneck suggests
+   a technique we haven't explored yet (e.g., "persistent matmul" or "warp specialization")
+4. **→ Research Skill** (`skills/research/SKILL.mdc`): to update docs and create the next
+   version or upgrade based on findings
+
+## Principles
+
+1. **Measure before guessing** — never assume where the bottleneck is
+2. **Isolate variables** — change one thing at a time between versions
+3. **Operation-level comparison** — don't just compare total time; break it down
+4. **Always show cross-version table** — makes progress (or lack thereof) visible
+5. **Arithmetic intensity is key** — compute FLOPs/byte for every major operation
+6. **cuBLAS is hard to beat** — know when to use it vs replace it
+7. **Rank matters** — performance characteristics change with LoRA rank
+8. **Memory is a first-class metric** — latency gains that blow up memory are not wins
+9. **Profile both time AND memory** — always run both, never skip memory
+
+## Project-Specific Paths (lora_qkv)
+
+```
+Base:        /workspace/kernel-POCs/kernels/lora_qkv/
+Experiments: experiments/v{N}/lora_qkv_kernel_v{N}.py
+Results:     benchmarks/results/*.csv
+Analysis:    docs/analysis/
+Baselines:   docs/artifacts/, reference/lora_qkv_pytorch.py
+Benchmark:   docs/benchmarks.md
+```

@@ -103,15 +103,29 @@ After any change, update these docs:
 | Speedup achieved | Measurable improvement over baseline | Results in `docs/benchmarks.md` |
 | Memory within budget | Peak memory <= baseline | Benchmark memory column |
 
+## Skill Chain
+
+This skill triggers and is triggered by other skills:
+
+**After creating/upgrading a version:**
+1. **→ Benchmarking Skill** (`skills/benchmarking/SKILL.mdc`): run time + memory benchmarks
+2. **→ Analysis Skill** (`skills/analysis/SKILL.mdc`): interpret results, identify bottlenecks
+3. **→ Explainer Skill** (`skills/explainer/SKILL.mdc`): if user needs a summary
+
+**Before creating a new version:**
+1. **→ Deep Research Skill** (`skills/deep-research/SKILL.mdc`): search for prior art and techniques
+2. **→ Analysis Skill**: review latest bottleneck analysis to decide what to build
+
 ## Principles
 
 1. **Never modify old versions** — every file is an immutable snapshot
-2. **Benchmark before and after** — quantify impact of every change
+2. **Benchmark before and after** — quantify impact of every change (time AND memory)
 3. **fp32 accumulation** — always accumulate in fp32, cast output to input dtype
 4. **Measure then optimize** — profile before guessing at bottlenecks
 5. **Document failures** — record what didn't work and why in CHANGELOG
 6. **Small steps** — one change per minor version, easy to bisect
 7. **Reference is ground truth** — if tests fail, the kernel is wrong (not the reference)
+8. **Memory matters** — every version must be benchmarked for both time and memory
 
 ## Project-Specific Paths (lora_qkv)
 

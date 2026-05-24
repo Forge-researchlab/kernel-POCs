@@ -61,24 +61,75 @@ For each benchmark result, verify:
 
 ### Step 4: Memory Analysis
 
-Measure peak GPU memory for each kernel:
+Memory is a **first-class metric** — measure it for every benchmark run.
+
+#### 4a: Peak Allocation Measurement
 
 ```python
-torch.cuda.reset_peak_memory_stats()
-torch.cuda.empty_cache()
+import torch
 
-# Run kernel
-output = kernel_fn(...)
-torch.cuda.synchronize()
+def measure_memory(fn, *args, warmup=3):
+    """Measure peak GPU memory allocated by fn, excluding input/weight memory."""
+    for _ in range(warmup):
+        fn(*args)
+    torch.cuda.synchronize()
 
-peak_mb = torch.cuda.max_memory_allocated() / 1024**2
+    torch.cuda.reset_peak_memory_stats()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+
+    mem_before = torch.cuda.memory_allocated()
+    output = fn(*args)
+    torch.cuda.synchronize()
+    peak = torch.cuda.max_memory_allocated()
+
+    peak_mb = peak / 1024**2
+    delta_mb = (peak - mem_before) / 1024**2
+    return {'peak_mb': round(peak_mb, 1), 'delta_mb': round(delta_mb, 1)}
+```
+
+#### 4b: What to Measure
+
+For each kernel version AND each baseline, measure:
+
+| Metric | What it captures | How |
+|--------|-----------------|-----|
+| Peak forward (MB) | Max memory during fwd pass | `measure_memory(fwd_fn)` |
+| Peak fwd+bwd (MB) | Max memory during training step | `measure_memory(train_step_fn)` |
+| Delta forward (MB) | Memory allocated BY the kernel (excl. inputs/weights) | `peak - before` |
+| Intermediate count | Number of temporary tensors created | manual count from code |
+
+#### 4c: Memory Comparison Table
+
+Always produce this table alongside the time table:
+
+```markdown
+| Kernel | Peak Fwd (MB) | Delta Fwd (MB) | Peak Train (MB) | Intermediates |
+|--------|--------------|----------------|-----------------|---------------|
+| PyTorch naive | XXX | XXX | XXX | XA_q, XA_k, XA_v, temps |
+| Unsloth | XXX | XXX | XXX | XA_q, XA_k, XA_v (tiny) |
+| v1 | XXX | XXX | XXX | Y only (XA in registers) |
+| v2 | XXX | XXX | XXX | packed_out, Y |
+```
+
+#### 4d: HBM Traffic Estimation
+
+Estimate total bytes read/written from GPU HBM (high-bandwidth memory):
+
+```python
+def estimate_hbm_bytes(M, N_q, N_kv, K, r, elem_size=2):
+    """Estimate HBM traffic for full QKV forward in bf16."""
+    return {
+        'unsloth': (6*M*K + M*(N_q+2*N_kv) + 3*M*r*2 + (N_q+2*N_kv)*K + 3*r*K + (N_q+2*N_kv)*r) * elem_size,
+        'v2': (3*M*K + M*((N_q+r)+2*(N_kv+r)) + M*(N_q+2*N_kv) + ((N_q+r)+2*(N_kv+r))*K) * elem_size,
+    }
 ```
 
 Report:
-- Peak memory (MB) for forward
-- Peak memory (MB) for forward + backward
-- Comparison against baseline memory usage
-- Memory savings from fusion (intermediates eliminated)
+- Total HBM traffic (MB) for each kernel
+- HBM savings vs baseline
+- Achieved bandwidth (traffic / time) vs GPU peak (A100: 2039 GB/s, H100: 3350 GB/s)
+- Whether the kernel is compute-bound or memory-bound
 
 ### Step 5: Standard Shapes to Test
 
@@ -170,15 +221,25 @@ When reporting benchmark results to the user, always include:
 CSV saved to: `benchmarks/results/{filename}.csv`
 ```
 
+## Skill Chain
+
+After benchmarking completes, ALWAYS trigger:
+
+1. **→ Analysis Skill** (`skills/analysis/SKILL.mdc`): interpret the numbers, identify
+   bottlenecks, recommend next steps. Raw numbers without interpretation are incomplete.
+2. **→ Explainer Skill** (`skills/explainer/SKILL.mdc`): if the user needs a human-readable
+   state-of-project update incorporating the new benchmark data.
+
 ## Principles
 
 1. **Reproducibility**: save ALL results to CSV with full configuration metadata
 2. **Fair comparison**: same hardware, same input data, same warmup/rep counts
 3. **Separate fwd/bwd**: forward and backward have different characteristics
-4. **Include memory**: latency alone is insufficient; memory is a first-class metric
+4. **Memory is mandatory**: NEVER benchmark time without also benchmarking memory
 5. **Standard shapes**: always include the primary benchmark config for comparability
 6. **Historical context**: show how performance has evolved across versions
 7. **After benchmarking, analyze**: raw numbers without interpretation are incomplete
+8. **Report both time AND memory together**: present in one unified table, not separate reports
 
 ## Project-Specific Paths (lora_qkv)
 
