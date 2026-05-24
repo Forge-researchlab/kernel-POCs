@@ -1,0 +1,46 @@
+{
+  "model": "Gemma2ForCausalLM",
+  "hidden": 128,
+  "layers": 4,
+  "vocab": 1024,
+  "world_size": 2,
+  "torch_version": "2.6.0+cu124",
+  "device": "NVIDIA A100-SXM4-80GB",
+  "train_steps": 5,
+  "micro_batches": 4,
+  "lr": 0.001,
+  "lora_r": 8,
+  "lora_alpha": 16,
+  "kernels_patched": [
+    "lora_qkv",
+    "lora_mlp"
+  ],
+  "peaks_gb": [
+    0.020953088,
+    0.020953088
+  ],
+  "ref_losses": [
+    6.951290726661682,
+    6.900157809257507,
+    6.848217964172363,
+    6.797659516334534,
+    6.750062704086304
+  ],
+  "fsdp_losses": [
+    6.951290726661682,
+    6.900221347808838,
+    6.84802508354187,
+    6.797371745109558,
+    6.749347686767578
+  ],
+  "checks": {
+    "C2_forward": true,
+    "C3_q_lora_A": true,
+    "C3_q_lora_B": true,
+    "C3_gate_lora_A": true,
+    "C3_gate_lora_B": true,
+    "C5_generation": true,
+    "C6_training": true
+  },
+  "overall": true
+}

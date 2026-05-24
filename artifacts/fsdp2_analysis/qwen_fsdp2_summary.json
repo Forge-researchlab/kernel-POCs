@@ -1,0 +1,46 @@
+{
+  "model": "Qwen3ForCausalLM",
+  "hidden": 128,
+  "layers": 4,
+  "vocab": 1024,
+  "world_size": 2,
+  "torch_version": "2.6.0+cu124",
+  "device": "NVIDIA A100-SXM4-80GB",
+  "train_steps": 5,
+  "micro_batches": 4,
+  "lr": 0.001,
+  "lora_r": 8,
+  "lora_alpha": 16,
+  "kernels_patched": [
+    "lora_qkv",
+    "lora_mlp"
+  ],
+  "peaks_gb": [
+    0.02069504,
+    0.020668416
+  ],
+  "ref_losses": [
+    6.952554225921631,
+    6.9192399978637695,
+    6.883816719055176,
+    6.847073316574097,
+    6.809842586517334
+  ],
+  "fsdp_losses": [
+    6.952554225921631,
+    6.919223070144653,
+    6.883577108383179,
+    6.84673547744751,
+    6.809239625930786
+  ],
+  "checks": {
+    "C2_forward": true,
+    "C3_q_lora_A": true,
+    "C3_q_lora_B": true,
+    "C3_gate_lora_A": true,
+    "C3_gate_lora_B": true,
+    "C5_generation": true,
+    "C6_training": true
+  },
+  "overall": true
+}

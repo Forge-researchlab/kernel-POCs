@@ -1,0 +1,15 @@
+{"run": "ref_single_gpu", "step": 0, "loss": 6.952554225921631, "step_time_ms": 150.90863779187202, "peak_vram_gb": 0.022166528}
+{"run": "ref_single_gpu", "step": 1, "loss": 6.9192399978637695, "step_time_ms": 61.8965532630682, "peak_vram_gb": 0.02262528}
+{"run": "ref_single_gpu", "step": 2, "loss": 6.883816719055176, "step_time_ms": 61.17087695747614, "peak_vram_gb": 0.02262528}
+{"run": "ref_single_gpu", "step": 3, "loss": 6.847073316574097, "step_time_ms": 61.132365837693214, "peak_vram_gb": 0.02262528}
+{"run": "ref_single_gpu", "step": 4, "loss": 6.809842586517334, "step_time_ms": 61.11909169703722, "peak_vram_gb": 0.02262528}
+{"run": "fsdp2", "rank": 0, "step": 0, "loss": 6.952554225921631, "step_time_ms": 235.21495796740055, "peak_vram_gb": 0.02069504}
+{"run": "fsdp2", "rank": 0, "step": 1, "loss": 6.919223070144653, "step_time_ms": 150.031927973032, "peak_vram_gb": 0.02069504}
+{"run": "fsdp2", "rank": 0, "step": 2, "loss": 6.883577108383179, "step_time_ms": 114.11035899072886, "peak_vram_gb": 0.02069504}
+{"run": "fsdp2", "rank": 0, "step": 3, "loss": 6.84673547744751, "step_time_ms": 114.19437825679779, "peak_vram_gb": 0.02069504}
+{"run": "fsdp2", "rank": 0, "step": 4, "loss": 6.809239625930786, "step_time_ms": 114.45562168955803, "peak_vram_gb": 0.02069504}
+{"run": "fsdp2", "rank": 1, "step": 0, "loss": 6.952554225921631, "step_time_ms": 269.24299262464046, "peak_vram_gb": 0.020553728}
+{"run": "fsdp2", "rank": 1, "step": 1, "loss": 6.919223070144653, "step_time_ms": 114.3698412925005, "peak_vram_gb": 0.020668416}
+{"run": "fsdp2", "rank": 1, "step": 2, "loss": 6.883577108383179, "step_time_ms": 114.0828737989068, "peak_vram_gb": 0.020668416}
+{"run": "fsdp2", "rank": 1, "step": 3, "loss": 6.84673547744751, "step_time_ms": 114.25922065973282, "peak_vram_gb": 0.020668416}
+{"run": "fsdp2", "rank": 1, "step": 4, "loss": 6.809239625930786, "step_time_ms": 114.47916831821203, "peak_vram_gb": 0.020668416}

@@ -138,8 +138,11 @@ def bake_reference(device, dtype, init_path, ref_path):
     name_to_param = dict(peft_model.named_parameters())
 
     ref_losses = []
+    ref_step_metrics = []
     ref_grads_after_step1 = None
     for step in range(TRAIN_STEPS):
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
         opt.zero_grad(set_to_none=True)
         step_loss = 0.0
         for mb in micro_batches:
@@ -153,7 +156,15 @@ def bake_reference(device, dtype, init_path, ref_path):
                 for key, name in LORA_GRAD_NAMES.items()
             }
         opt.step()
-        ref_losses.append(step_loss / MICRO_BATCHES)
+        torch.cuda.synchronize()
+        step_time_ms = (time.perf_counter() - t0) * 1000
+        avg_loss = step_loss / MICRO_BATCHES
+        ref_losses.append(avg_loss)
+        ref_step_metrics.append({
+            "step": step, "loss": avg_loss,
+            "step_time_ms": step_time_ms,
+            "peak_vram_gb": torch.cuda.max_memory_allocated() / 1e9,
+        })
 
     torch.save({
         "ref_logits": ref_logits,
@@ -161,6 +172,7 @@ def bake_reference(device, dtype, init_path, ref_path):
         "gen_ok": gen_ok,
         "ref_losses": ref_losses,
         "ref_grads": ref_grads_after_step1,
+        "ref_step_metrics": ref_step_metrics,
     }, ref_path)
     print(f"[rank 0] reference baked. logits {tuple(ref_logits.shape)}, "
           f"gen_ok={gen_ok}, losses {[f'{l:.4f}' for l in ref_losses]}")
@@ -339,7 +351,7 @@ def main():
         print("=" * 70)
 
     try:
-        logits, gen, gen_ok, losses, grads = run_fsdp2(
+        logits, gen, gen_ok, losses, grads, fsdp_metrics = run_fsdp2(
             rank, world, device, dtype, init_path
         )
         run_exc = None
@@ -348,12 +360,15 @@ def main():
         if rank == 0:
             print(f"[rank 0] run_fsdp2 raised: {type(e).__name__}: {e}")
             traceback.print_exc()
-        logits = gen = losses = grads = None
+        logits = gen = losses = grads = fsdp_metrics = None
         gen_ok = False
 
     peak_mem = torch.cuda.max_memory_allocated() / 1e9
     peaks_holder = [None] * world
     dist.all_gather_object(peaks_holder, peak_mem)
+
+    all_fsdp_metrics = [None] * world
+    dist.all_gather_object(all_fsdp_metrics, fsdp_metrics)
 
     rc = 1
     if rank == 0:
@@ -377,6 +392,42 @@ def main():
             print()
             print(f"  OVERALL: {'PASS' if all_ok else 'FAIL'}")
             rc = 0 if all_ok else 1
+
+            out_dir = os.path.join(
+                os.path.dirname(os.path.dirname(_HERE)),
+                "artifacts", "fsdp2_analysis",
+            )
+            os.makedirs(out_dir, exist_ok=True)
+            jsonl_path = os.path.join(out_dir, "qwen_fsdp2_metrics.jsonl")
+            with open(jsonl_path, "w") as f:
+                ref_metrics = ref.get("ref_step_metrics", [])
+                for m in ref_metrics:
+                    f.write(json.dumps({"run": "ref_single_gpu", **m}) + "\n")
+                for r_idx, r_metrics in enumerate(all_fsdp_metrics):
+                    if r_metrics:
+                        for m in r_metrics:
+                            f.write(json.dumps({"run": "fsdp2", "rank": r_idx, **m}) + "\n")
+
+            summary = {
+                "model": "Qwen3ForCausalLM",
+                "hidden": HIDDEN, "layers": NUM_LAYERS, "vocab": VOCAB,
+                "world_size": world,
+                "torch_version": torch.__version__,
+                "device": torch.cuda.get_device_name(0),
+                "train_steps": TRAIN_STEPS, "micro_batches": MICRO_BATCHES,
+                "lr": LR, "lora_r": 8, "lora_alpha": 16,
+                "kernels_patched": ["lora_qkv", "lora_mlp"],
+                "peaks_gb": peaks_holder,
+                "ref_losses": ref["ref_losses"],
+                "fsdp_losses": losses,
+                "checks": {k: bool(v) for k, v in results.items()},
+                "overall": bool(all_ok),
+            }
+            summary_path = os.path.join(out_dir, "qwen_fsdp2_summary.json")
+            with open(summary_path, "w") as f:
+                json.dump(summary, f, indent=2)
+            print(f"\n  Metrics written to: {jsonl_path}")
+            print(f"  Summary written to: {summary_path}")
         else:
             print()
             print("=" * 70)

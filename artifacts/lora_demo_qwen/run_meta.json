@@ -1,0 +1,29 @@
+{
+  "model": "Qwen/Qwen2.5-0.5B",
+  "world_size": 2,
+  "device_name": "NVIDIA A100-SXM4-80GB",
+  "torch": "2.7.0",
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "steps": 200,
+  "lr": 0.0002,
+  "batch_per_micro": 2,
+  "micro_batches": 4,
+  "effective_batch": 8,
+  "max_seq_len": 512,
+  "forge_kernels": [
+    "lora_qkv",
+    "lora_mlp"
+  ],
+  "patched_counts": {
+    "lora_qkv": 24,
+    "lora_mlp": 24
+  },
+  "first_loss": 4.368643760681152,
+  "final_loss": 0.0005038665694883093,
+  "min_loss": 0.0003951397957280278,
+  "final_peak_vram_gb_per_rank": [
+    1.74989312,
+    1.74989312
+  ]
+}
