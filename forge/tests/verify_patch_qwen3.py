@@ -5,6 +5,7 @@ Runs the bisection pattern from design_details.html#wiring:
     baseline -> patch(kernels=["embedding"]) -> compare
     baseline -> patch(kernels=["rope"])      -> compare    # the brittle one
     baseline -> patch(kernels=["rmsnorm"])   -> compare    # Qwen2RMSNorm path
+    baseline -> patch(kernels=["swiglu"])    -> compare    # Qwen2MLP/Qwen3MLP path
     baseline -> patch()                       -> compare
     baseline -> unpatch                       -> must match baseline EXACTLY
 
@@ -131,7 +132,7 @@ def main():
     results = {}
 
     # === Embedding only ===
-    print("\n[2/5] forge.patch(model, kernels=['embedding']) ...")
+    print("\n[2/7] forge.patch(model, kernels=['embedding']) ...")
     try:
         forge.patch(model, kernels=["embedding"])
         print(f"  patched_counts = {model._forge_patched_counts}")
@@ -147,7 +148,7 @@ def main():
             forge.unpatch(model)
 
     # === RoPE only (the brittle one — verifies the cos/sin shape contract) ===
-    print("\n[3/6] forge.patch(model, kernels=['rope']) ...")
+    print("\n[3/7] forge.patch(model, kernels=['rope']) ...")
     try:
         forge.patch(model, kernels=["rope"])
         print(f"  patched_counts = {model._forge_patched_counts}  "
@@ -167,7 +168,7 @@ def main():
             forge.unpatch(model)
 
     # === RMSNorm only (Qwen2/3RMSNorm — offset=0.0, casting_mode='llama') ===
-    print("\n[4/6] forge.patch(model, kernels=['rmsnorm']) ...")
+    print("\n[4/7] forge.patch(model, kernels=['rmsnorm']) ...")
     try:
         forge.patch(model, kernels=["rmsnorm"])
         print(f"  patched_counts = {model._forge_patched_counts}")
@@ -182,8 +183,25 @@ def main():
         if getattr(model, "_forge_patched", False):
             forge.unpatch(model)
 
+    # === SwiGLU only (Qwen2MLP/Qwen3MLP — replaces full gate/up/down with
+    # gate_proj + up_proj + Forge swiglu(silu(g)*u) + down_proj). ===
+    print("\n[5/7] forge.patch(model, kernels=['swiglu']) ...")
+    try:
+        forge.patch(model, kernels=["swiglu"])
+        print(f"  patched_counts = {model._forge_patched_counts}")
+        with torch.no_grad():
+            out_swiglu = model(ids).logits
+        results["swiglu"] = _summary(out_orig, out_swiglu, "swiglu")
+    except Exception as e:
+        print(f"  EXCEPTION: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        results["swiglu"] = False
+    finally:
+        if getattr(model, "_forge_patched", False):
+            forge.unpatch(model)
+
     # === Both (default: everything that's wired) ===
-    print("\n[5/6] forge.patch(model)  (all wired kernels) ...")
+    print("\n[6/7] forge.patch(model)  (all wired kernels) ...")
     try:
         forge.patch(model)
         print(f"  patched_counts = {model._forge_patched_counts}")
@@ -199,7 +217,7 @@ def main():
             forge.unpatch(model)
 
     # === Unpatch must restore EXACTLY ===
-    print("\n[6/6] unpatch restoration check ...")
+    print("\n[7/7] unpatch restoration check ...")
     with torch.no_grad():
         out_restored = model(ids).logits
     exact_restore = bool(torch.equal(out_restored, out_orig))

@@ -1,0 +1,2 @@
+M,batch,dtype,hidden,intermediate,mode,rank,seq_len,unsloth_ms,v3_ms,v5_inf_ms,v5_inf_vs_unsloth,v5_inf_vs_v3,v5_train_ms,v5_train_vs_unsloth,v5_train_vs_v3,v5_up1_train_ms,v5_up1_train_vs_unsloth,v5_up1_train_vs_v3,v5_up1_train_vs_v5,v6_streams_ms,v6_streams_vs_unsloth,v6_streams_vs_v3,v6_streams_vs_v5_up1,v6_streams_vs_v6_sync,v6_sync_ms,v6_sync_vs_unsloth,v6_sync_vs_v3,v6_sync_vs_v5_up1
+512,1,torch.bfloat16,4096,14336,mlp,16,512,1.2193,1.1657,0.9029,1.35,1.291,1.0068,1.211,1.158,1.0129,1.204,1.151,0.994,0.8295,1.47,1.405,1.221,1.444,1.1982,1.018,0.973,0.845

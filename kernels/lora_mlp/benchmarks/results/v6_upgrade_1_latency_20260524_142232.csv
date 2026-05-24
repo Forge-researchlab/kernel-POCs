@@ -1,0 +1,2 @@
+config,batch,seq,hidden,intermediate,rank,unsloth_ms,v3_ms,v5_ms,v5_up1_ms,v6_sync_ms,v6_streams_ms,v5_inf_ms,v6_sync_vs_unsloth,v6_streams_vs_unsloth,v6_streams_vs_v3
+LLaMA-8B_prod,4,2048,4096,14336,16,14.094,12.06,12.148,12.046,12.093,11.91,11.649,1.17x,1.18x,1.01x

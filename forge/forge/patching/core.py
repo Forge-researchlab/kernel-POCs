@@ -84,6 +84,165 @@ def _detect_architecture(model) -> str:
 # core.py owns only orchestration: validation, traversal, mutation, restoration.
 # ----------------------------------------------------------------------------
 
+def _make_embedding_forward(module, config):
+    """nn.Embedding.forward -> ForgeEmbeddingFunction.apply(weight, indices, padding_idx).
+
+    Forwards `module.padding_idx` to the kernel so the pad row's gradient is
+    zeroed in backward — matching nn.Embedding's contract. Without this the
+    pad embedding silently drifts under training (caught by the Gemma
+    padding-stress test). Gemma/Llama/Qwen all set padding_idx by default,
+    so this is the common case, not an edge case.
+    """
+    from forge.kernels.embedding import ForgeEmbeddingFunction
+
+    padding_idx = module.padding_idx  # int or None (resolved by nn.Embedding init)
+
+    def forward(input_ids):
+        return ForgeEmbeddingFunction.apply(module.weight, input_ids, padding_idx)
+    return forward
+
+
+def _make_rmsnorm_forward(module, config):
+    """{Qwen,Gemma,Llama}RMSNorm.forward -> apply_rmsnorm(x, weight, eps, offset, casting_mode, in_place).
+
+    Reads `offset` from config (0.0 for Qwen/Llama, 1.0 for Gemma) and picks
+    casting_mode by default ("gemma" when offset==1.0, else "llama"); both can
+    be overridden via the mapping config. Reads `eps` from `module.variance_epsilon`
+    (Qwen2/3) or falls back to `module.eps` (Gemma).
+
+    `in_place` controls v4's backward dY → dX optimization:
+      - Qwen/Llama (offset=0): default True (sequential RMSNorm pattern; dy
+                               not needed after backward — safe).
+      - Gemma2 (offset=1):     default False (residual-paired RMSNorm; dy is
+                               consumed by another backward node — must preserve).
+    Override via `{"in_place": True/False}` in the mapping config.
+    """
+    from forge.kernels.rmsnorm import apply_rmsnorm
+
+    offset = float(config.get("offset", 0.0))
+    casting_mode = config.get("casting_mode", "gemma" if offset == 1.0 else "llama")
+    # in_place default tracks offset: safe for Qwen/Llama, unsafe for Gemma residual paths.
+    in_place = bool(config.get("in_place", offset != 1.0))
+    eps = float(getattr(module, "variance_epsilon",
+                        getattr(module, "eps", 1e-6)))
+
+    def forward(hidden_states):
+        # Close over `module.weight` (not a copy) so LoRA updates flow live.
+        return apply_rmsnorm(hidden_states, module.weight, eps=eps,
+                             offset=offset, casting_mode=casting_mode,
+                             in_place=in_place)
+    return forward
+
+
+def _make_geglu_forward(module, config):
+    """Gemma/Gemma2 MLP.forward -> down_proj( geglu(gate_proj(x), up_proj(x), approximate=...) ).
+
+    Mirrors `_make_swiglu_forward` (calls the projection submodules, not their
+    .weight, so PEFT adapters keep working). Only the activation kernel differs:
+    SiLU -> GELU (variant chosen per-model from the HF config).
+
+    Approximation mode: Gemma defaults to `gelu_pytorch_tanh` (tanh-approx GELU);
+    our kernel exposes `approximate="tanh" | "none"`. We read the HF config
+    string (`hidden_activation` for Gemma2, `hidden_act` for Gemma) and map to
+    the kernel's mode. Unknown strings raise — silently swapping an exact GELU
+    for the tanh approx would shift forward outputs ~1e-3 and fail parity tests.
+
+    Activations resolved here (HF ACT2FN names):
+        gelu, gelu_python              -> "none"  (exact)
+        gelu_pytorch_tanh, gelu_new    -> "tanh"  (approx; Gemma's actual default)
+    """
+    from forge.kernels.geglu import geglu
+
+    # Caller can override via mapping config; otherwise sniff the HF config.
+    explicit_mode = config.get("approximate")
+    if explicit_mode is not None:
+        approximate = explicit_mode
+    else:
+        hf_cfg = getattr(module, "config", None)
+        act_name = None
+        if hf_cfg is not None:
+            act_name = getattr(hf_cfg, "hidden_activation", None) or getattr(hf_cfg, "hidden_act", None)
+        _EXACT = {"gelu", "gelu_python"}
+        _TANH = {"gelu_pytorch_tanh", "gelu_new"}
+        if act_name in _EXACT:
+            approximate = "none"
+        elif act_name in _TANH:
+            approximate = "tanh"
+        else:
+            raise NotImplementedError(
+                f"forge.patch: geglu kernel cannot infer GELU variant for "
+                f"hidden_activation={act_name!r}. Pass approximate='tanh' or "
+                f"approximate='none' via the mapping config to override."
+            )
+
+    def forward(x):
+        gate = module.gate_proj(x)
+        up = module.up_proj(x)
+        return module.down_proj(geglu(gate, up, approximate=approximate))
+    return forward
+
+
+def _make_swiglu_forward(module, config):
+    """Qwen2/3 MLP.forward -> down_proj( swiglu(gate_proj(x), up_proj(x)) ).
+
+    The SwiGLU kernel only fuses `silu(gate) * up`; the three projections stay
+    as the module's own `nn.Linear` (or PEFT-wrapped LoRA Linear) so PEFT
+    adapters keep working through `forge.patch`. Calling the submodules
+    (`module.gate_proj(x)`) instead of using their `.weight` directly is what
+    lets adapter-wrapped Linears intercept the call.
+
+    Rejects non-`silu` activations at build time so a Gemma-style
+    `activation="gelu"` mapping fails loudly instead of silently producing
+    wrong outputs through a SiLU-only kernel. Gemma's GELU path lives in the
+    separate `geglu` kernel.
+    """
+    activation = config.get("activation", "silu")
+    if activation != "silu":
+        raise NotImplementedError(
+            f"forge.patch: swiglu kernel only supports activation='silu', "
+            f"got {activation!r}. Route this module to the 'geglu' kernel instead."
+        )
+
+    from forge.kernels.swiglu import swiglu
+
+    def forward(x):
+        gate = module.gate_proj(x)
+        up = module.up_proj(x)
+        return module.down_proj(swiglu(gate, up))
+    return forward
+
+
+def _make_not_implemented(kernel_name: str, why: str):
+    """Stub factory: forge.patch silently skips this kernel unless the caller
+    requests it explicitly via kernels=[...]. Then it raises so the gap is loud.
+    """
+    def factory(module, config):
+        def forward(*args, **kwargs):
+            raise NotImplementedError(
+                f"Forge kernel {kernel_name!r} is not implemented yet ({why}). "
+                f"Use forge.patch(model, kernels=[<built kernels only>]) to skip it."
+            )
+        return forward
+    factory.__forge_stub__ = True   # sentinel: patch loop skips unless explicit
+    factory.__forge_kernel_name__ = kernel_name
+    factory.__forge_reason__ = why
+    return factory
+
+
+_FORWARD_MAKERS: Dict[str, Callable] = {
+    # === Wired to real kernels ===
+    "embedding":     _make_embedding_forward,
+    "rmsnorm":       _make_rmsnorm_forward,
+    "swiglu":        _make_swiglu_forward,
+    "geglu":         _make_geglu_forward,
+
+    # === Stubs — declared so the mapping shape matches the V1 plan; flipping
+    # to real is a one-line change when the team lands the kernel.
+    "cross_entropy": _make_not_implemented("cross_entropy", "H3 — model/loss forward interception not wired"),
+    "lora_qkv":      _make_not_implemented("lora_qkv",      "H5 — not built"),
+    "lora_mlp":      _make_not_implemented("lora_mlp",      "PEFT integration deferred per Day 2 scope"),
+}
+
 
 # ----------------------------------------------------------------------------
 # Per-module-instance forward replacement

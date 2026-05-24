@@ -247,7 +247,20 @@ TARGET_CHUNK_SIZE = 32
 # =============================================================================
 class ForgeEmbeddingFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, embeddings: torch.Tensor, indices: torch.Tensor):
+    def forward(ctx, embeddings: torch.Tensor, indices: torch.Tensor,
+                padding_idx: int = None):
+        """Forge embedding lookup.
+
+        Args:
+            embeddings:  (vocab_size, embedding_dim) weight table.
+            indices:     int tensor of token ids, any shape; flattened internally.
+            padding_idx: matches nn.Embedding's contract — if set, the gradient
+                         row at this index is zeroed in backward so the pad
+                         embedding stays frozen during training. PyTorch's
+                         nn.Embedding does this; without it the pad row drifts
+                         under SGD (subtle but real — caught by the Gemma
+                         padding-stress test, see forge/tests/verify_patch_gemma.py).
+        """
         embeddings = embeddings.contiguous()
         indices = indices.contiguous()
 
@@ -278,6 +291,7 @@ class ForgeEmbeddingFunction(torch.autograd.Function):
 
         ctx.save_for_backward(indices_flat, embeddings)
         ctx.ori_shape = ori_shape
+        ctx.padding_idx = padding_idx
         return output.view(*ori_shape, -1)
 
     @staticmethod
@@ -365,4 +379,12 @@ class ForgeEmbeddingFunction(torch.autograd.Function):
         else:
             grad_weight.index_add_(0, indices_flat, grad_output)
 
-        return grad_weight, None
+        # Match nn.Embedding(padding_idx=...) semantics: the pad row's gradient
+        # is dropped so the pad embedding stays frozen across training. Without
+        # this the kernel silently diverges from the unpatched path on any model
+        # that sets padding_idx (Gemma, Llama, Qwen all do by default).
+        # Universal fix: applies to both the sort path and the index_add fallback.
+        if ctx.padding_idx is not None:
+            grad_weight[ctx.padding_idx].zero_()
+
+        return grad_weight, None, None

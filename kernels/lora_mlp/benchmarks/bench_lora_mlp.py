@@ -7,12 +7,14 @@ Compares (full MLP forward at LLaMA scale):
   - v3 cuBLAS + Triton fused LoRA-SwiGLU epilogue (8 launches)
   - v5 packed cuBLAS + Triton epilogue, training path (4 launches)
   - v5_upgrade_1 padded gate+up mega + v3-style down (5 launches)
+  - v6_sync   cuBLAS big GEMMs + Triton stacked LoRA-A (~6 launches; sync)
+  - v6_streams same as v6_sync but with gate/up and down/A_down on a side stream
   - v5 inference path with pre-merged weights (4 launches; cuBLAS-only when
     cublasLt SWISH is available, otherwise still 4 launches with 1 Triton op)
 
 Two benchmark modes:
   - projection: single matmul_lora call (v1 vs Unsloth per-projection)
-  - mlp:        full MLP forward, including v3 and v5 paths
+  - mlp:        full MLP forward, including v3, v5, and v6 paths
 """
 
 import argparse
@@ -46,6 +48,10 @@ from experiments.v5.lora_mlp_kernel_v5 import (
 from experiments.v5.lora_mlp_kernel_v5_upgrade_1 import (
     lora_mlp_v5_upgrade_1,
     pack_gate_up_weights_padded,
+)
+from experiments.v6.lora_mlp_kernel_v6 import (
+    lora_mlp_v6,
+    stack_lora_a,
 )
 
 
@@ -142,6 +148,31 @@ def bench_mlp(batch, seq_len, hidden, intermediate, rank, dtype, lora_scale=1.0)
             W_mega_padded=W_mega_padded,
         )
 
+    # ── v6 (cuBLAS big GEMMs + Triton stacked LoRA-A + optional streams) ──
+    # Pre-build the [2r, H] stacked A buffer once outside the timed loop, mirroring
+    # real training where it would be refreshed per optimizer step, not per fwd.
+    A_stack = stack_lora_a(gp["A"], up["A"])
+
+    def v6_sync_fn():
+        return lora_mlp_v6(
+            X,
+            gp["W"], gp["A"], gp["B"], gp["s"],
+            up["W"], up["A"], up["B"], up["s"],
+            dp["W"], dp["A"], dp["B"], dp["s"],
+            A_stack=A_stack,
+            enable_streams=False,
+        )
+
+    def v6_streams_fn():
+        return lora_mlp_v6(
+            X,
+            gp["W"], gp["A"], gp["B"], gp["s"],
+            up["W"], up["A"], up["B"], up["s"],
+            dp["W"], dp["A"], dp["B"], dp["s"],
+            A_stack=A_stack,
+            enable_streams=True,
+        )
+
     # ── v5 inference (pre-merged + transposed once) ──
     W_gate_eff_T, W_up_eff_T, W_down_eff_T = prepare_inference_weights(
         gp["W"], gp["A"], gp["B"], gp["s"],
@@ -156,6 +187,8 @@ def bench_mlp(batch, seq_len, hidden, intermediate, rank, dtype, lora_scale=1.0)
     ms_v3 = triton.testing.do_bench(v3_fn, warmup=WARMUP, rep=REP)
     ms_v5_train = triton.testing.do_bench(v5_train_fn, warmup=WARMUP, rep=REP)
     ms_v5_up1_train = triton.testing.do_bench(v5_upgrade_1_train_fn, warmup=WARMUP, rep=REP)
+    ms_v6_sync = triton.testing.do_bench(v6_sync_fn, warmup=WARMUP, rep=REP)
+    ms_v6_streams = triton.testing.do_bench(v6_streams_fn, warmup=WARMUP, rep=REP)
     ms_v5_inf = triton.testing.do_bench(v5_inf_fn, warmup=WARMUP, rep=REP)
 
     def safe_div(a, b):
@@ -171,12 +204,21 @@ def bench_mlp(batch, seq_len, hidden, intermediate, rank, dtype, lora_scale=1.0)
         "v3_ms": round(ms_v3, 4),
         "v5_train_ms": round(ms_v5_train, 4),
         "v5_up1_train_ms": round(ms_v5_up1_train, 4),
+        "v6_sync_ms": round(ms_v6_sync, 4),
+        "v6_streams_ms": round(ms_v6_streams, 4),
         "v5_inf_ms": round(ms_v5_inf, 4),
         "v5_train_vs_unsloth": safe_div(ms_unsloth, ms_v5_train),
         "v5_train_vs_v3": safe_div(ms_v3, ms_v5_train),
         "v5_up1_train_vs_unsloth": safe_div(ms_unsloth, ms_v5_up1_train),
         "v5_up1_train_vs_v3": safe_div(ms_v3, ms_v5_up1_train),
         "v5_up1_train_vs_v5": safe_div(ms_v5_train, ms_v5_up1_train),
+        "v6_sync_vs_unsloth": safe_div(ms_unsloth, ms_v6_sync),
+        "v6_sync_vs_v3": safe_div(ms_v3, ms_v6_sync),
+        "v6_sync_vs_v5_up1": safe_div(ms_v5_up1_train, ms_v6_sync),
+        "v6_streams_vs_unsloth": safe_div(ms_unsloth, ms_v6_streams),
+        "v6_streams_vs_v3": safe_div(ms_v3, ms_v6_streams),
+        "v6_streams_vs_v5_up1": safe_div(ms_v5_up1_train, ms_v6_streams),
+        "v6_streams_vs_v6_sync": safe_div(ms_v6_sync, ms_v6_streams),
         "v5_inf_vs_unsloth": safe_div(ms_unsloth, ms_v5_inf),
         "v5_inf_vs_v3": safe_div(ms_v3, ms_v5_inf),
     }
@@ -213,14 +255,16 @@ def run_projection_sweep():
 
 
 def run_mlp_sweep():
-    """Full MLP benchmark sweep across Unsloth/v3/v5_train/v5_up1_train/v5_inf."""
+    """Full MLP benchmark sweep across Unsloth/v3/v5_train/v5_up1_train/v6_*/v5_inf."""
     results = []
     configs = [
-        # LLaMA-8B
+        # LLaMA-8B production
+        {"batch": 4, "seq_len": 2048, "hidden": 4096, "intermediate": 14336},
         {"batch": 1, "seq_len": 2048, "hidden": 4096, "intermediate": 14336},
         {"batch": 2, "seq_len": 1024, "hidden": 4096, "intermediate": 14336},
         {"batch": 4, "seq_len": 512, "hidden": 4096, "intermediate": 14336},
-        {"batch": 4, "seq_len": 2048, "hidden": 4096, "intermediate": 14336},
+        # Small-M config to probe the stream-parallelism regression threshold
+        {"batch": 1, "seq_len": 512, "hidden": 4096, "intermediate": 14336},
         # LLaMA-13B-ish
         {"batch": 1, "seq_len": 2048, "hidden": 5120, "intermediate": 17920},
     ]
@@ -238,10 +282,14 @@ def run_mlp_sweep():
                     f"v3={result['v3_ms']:.2f} "
                     f"v5_tr={result['v5_train_ms']:.2f} "
                     f"v5up1_tr={result['v5_up1_train_ms']:.2f} "
+                    f"v6_sync={result['v6_sync_ms']:.2f} "
+                    f"v6_str={result['v6_streams_ms']:.2f} "
                     f"v5_in={result['v5_inf_ms']:.2f} | "
                     f"v5_tr/v3={result['v5_train_vs_v3']:.2f}x "
                     f"v5up1/v3={result['v5_up1_train_vs_v3']:.2f}x "
-                    f"v5_in/v3={result['v5_inf_vs_v3']:.2f}x"
+                    f"v6_sync/v3={result['v6_sync_vs_v3']:.2f}x "
+                    f"v6_str/v3={result['v6_streams_vs_v3']:.2f}x "
+                    f"v6_str/v5up1={result['v6_streams_vs_v5_up1']:.2f}x"
                 )
     return results
 
@@ -297,13 +345,15 @@ def main():
             print(f"  down:    unsloth={r2['unsloth_ms']:.3f}ms triton={r2['triton_v1_ms']:.3f}ms speedup={r2['speedup']:.2f}x")
 
         if args.mode in ("mlp", "all"):
-            print("\nFull MLP forward (Unsloth vs v3 vs v5_train vs v5_up1_train vs v5_inf):")
+            print("\nFull MLP forward (Unsloth vs v3 vs v5_train vs v5_up1_train vs v6_sync vs v6_streams vs v5_inf):")
             r3 = bench_mlp(batch, seq, args.hidden, args.intermediate, rank, torch.bfloat16)
             print(
                 f"  unsloth={r3['unsloth_ms']:.3f}ms "
                 f"v3={r3['v3_ms']:.3f}ms "
                 f"v5_train={r3['v5_train_ms']:.3f}ms "
                 f"v5_up1_train={r3['v5_up1_train_ms']:.3f}ms "
+                f"v6_sync={r3['v6_sync_ms']:.3f}ms "
+                f"v6_streams={r3['v6_streams_ms']:.3f}ms "
                 f"v5_inf={r3['v5_inf_ms']:.3f}ms"
             )
             print(
@@ -311,6 +361,12 @@ def main():
             )
             print(
                 f"  v5_up1_train: {r3['v5_up1_train_vs_unsloth']:.2f}x vs Unsloth, {r3['v5_up1_train_vs_v3']:.2f}x vs v3, {r3['v5_up1_train_vs_v5']:.2f}x vs v5"
+            )
+            print(
+                f"  v6_sync:      {r3['v6_sync_vs_unsloth']:.2f}x vs Unsloth, {r3['v6_sync_vs_v3']:.2f}x vs v3, {r3['v6_sync_vs_v5_up1']:.2f}x vs v5_up1"
+            )
+            print(
+                f"  v6_streams:   {r3['v6_streams_vs_unsloth']:.2f}x vs Unsloth, {r3['v6_streams_vs_v3']:.2f}x vs v3, {r3['v6_streams_vs_v5_up1']:.2f}x vs v5_up1, {r3['v6_streams_vs_v6_sync']:.2f}x vs v6_sync"
             )
             print(
                 f"  v5_inf:       {r3['v5_inf_vs_unsloth']:.2f}x vs Unsloth, {r3['v5_inf_vs_v3']:.2f}x vs v3"
@@ -321,7 +377,7 @@ def main():
             results = []
             if args.mode in ("mlp", "all"):
                 results.append(r3)
-            save_results(results, os.path.join(args.save, f"v5_upgrade_1_{timestamp}.csv"))
+            save_results(results, os.path.join(args.save, f"v6_{timestamp}.csv"))
         return
 
     # Sweep mode
@@ -337,7 +393,7 @@ def main():
 
     if args.save and all_results:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        save_results(all_results, os.path.join(args.save, f"v5_upgrade_1_{timestamp}.csv"))
+        save_results(all_results, os.path.join(args.save, f"v6_{timestamp}.csv"))
 
 
 if __name__ == "__main__":

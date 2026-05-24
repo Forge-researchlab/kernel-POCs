@@ -8,7 +8,9 @@ for training paths) for each implementation:
   2. v3       ``LoRAMLPv3.apply``                  (fwd + bwd)
   3. v5       ``LoRAMLPv5.apply``                  (fwd + bwd)
   4. v5_upgrade_1 ``LoRAMLPv5_upgrade_1.apply``    (fwd + bwd)
-  5. v5 inference ``lora_mlp_v5_inference``        (fwd only, pre-merged)
+  5. v6_sync   ``LoRAMLPv6.apply`` (enable_streams=False) (fwd + bwd)
+  6. v6_streams ``LoRAMLPv6.apply`` (enable_streams=True) (fwd + bwd)
+  7. v5 inference ``lora_mlp_v5_inference``        (fwd only, pre-merged)
 
 Methodology per measurement:
     torch.cuda.empty_cache()
@@ -66,6 +68,9 @@ from experiments.v5.lora_mlp_kernel_v5 import (  # noqa: E402
 from experiments.v5.lora_mlp_kernel_v5_upgrade_1 import (  # noqa: E402
     LoRAMLPv5_upgrade_1,
 )
+from experiments.v6.lora_mlp_kernel_v6 import (  # noqa: E402
+    LoRAMLPv6,
+)
 
 
 DEVICE = "cuda"
@@ -73,7 +78,7 @@ MB = 1024.0 * 1024.0
 REPEATS = 3
 WARMUPS = 2
 
-IMPLS_TRAINING = ("Unsloth", "v3", "v5", "v5_upgrade_1")
+IMPLS_TRAINING = ("Unsloth", "v3", "v5", "v5_upgrade_1", "v6_sync", "v6_streams")
 IMPL_INFERENCE = "v5_inference"
 IMPL_ORDER = (*IMPLS_TRAINING, IMPL_INFERENCE)
 
@@ -293,6 +298,44 @@ def run_config(
     fwd, full, resident = measure_median(v5_up1_fn, backward=True, grad_tensors=grad_tensors)
     results.append(MemResult(
         impl="v5_upgrade_1", weight_mb=train_weight_mb,
+        fwd_mb=fwd / MB, fwd_bwd_mb=full / MB,
+        resident_after_fwd_mb=resident / MB, **common,
+    ))
+
+    # ── v6_sync (cuBLAS big GEMMs + Triton stacked LoRA-A, enable_streams=False) ──
+    def v6_sync_fn():
+        return LoRAMLPv6.apply(
+            X,
+            gp["W"], gp["A"], gp["B"], gp["s"],
+            up["W"], up["A"], up["B"], up["s"],
+            dp["W"], dp["A"], dp["B"], dp["s"],
+            None,   # A_stack (None → repack inside forward)
+            False,  # enable_streams
+            None,   # side_stream
+        )
+
+    fwd, full, resident = measure_median(v6_sync_fn, backward=True, grad_tensors=grad_tensors)
+    results.append(MemResult(
+        impl="v6_sync", weight_mb=train_weight_mb,
+        fwd_mb=fwd / MB, fwd_bwd_mb=full / MB,
+        resident_after_fwd_mb=resident / MB, **common,
+    ))
+
+    # ── v6_streams (same as v6_sync but with side-stream parallelism) ──
+    def v6_streams_fn():
+        return LoRAMLPv6.apply(
+            X,
+            gp["W"], gp["A"], gp["B"], gp["s"],
+            up["W"], up["A"], up["B"], up["s"],
+            dp["W"], dp["A"], dp["B"], dp["s"],
+            None,  # A_stack
+            True,  # enable_streams
+            None,  # side_stream
+        )
+
+    fwd, full, resident = measure_median(v6_streams_fn, backward=True, grad_tensors=grad_tensors)
+    results.append(MemResult(
+        impl="v6_streams", weight_mb=train_weight_mb,
         fwd_mb=fwd / MB, fwd_bwd_mb=full / MB,
         resident_after_fwd_mb=resident / MB, **common,
     ))
@@ -585,6 +628,11 @@ def default_configs() -> List[Tuple[str, dict]]:
         (
             "LLaMA-8B small (batch=1, seq=2048, r=16, bf16)",
             dict(batch=1, seq_len=2048, hidden=4096, intermediate=14336, rank=16,
+                 dtype=torch.bfloat16),
+        ),
+        (
+            "LLaMA-8B small-M (batch=1, seq=512, r=16, bf16)",
+            dict(batch=1, seq_len=512, hidden=4096, intermediate=14336, rank=16,
                  dtype=torch.bfloat16),
         ),
         (
