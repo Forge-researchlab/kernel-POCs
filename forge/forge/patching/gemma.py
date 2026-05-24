@@ -21,11 +21,20 @@ GEMMA_MAPPING = {
     "GemmaRMSNorm":     ("rmsnorm",   {"offset": 1.0}),
     "Gemma2RMSNorm":    ("rmsnorm",   {"offset": 1.0}),
 
-    # MLP — Gemma uses GeGLU (GELU), not SwiGLU. The adapter infers the HF
-    # GELU approximation mode from the module config and calls projections as
-    # modules so PEFT wrappers and live weights remain visible.
-    "GemmaMLP":         ("geglu",     {"activation": "gelu"}),
-    "Gemma2MLP":        ("geglu",     {"activation": "gelu"}),
+    # MLP — list of fallback specs tried in order. On a PEFT-wrapped Gemma 2
+    # the lora_mlp factory succeeds (extracting LoRA-A/B from each projection
+    # and fusing through the geglu kernel for the activation step). On a
+    # non-PEFT Gemma 2 the lora factory raises ForgeSkipPatch and the loop
+    # falls through to the plain geglu adapter. The whitelist filter in
+    # core.patch lets callers force LoRA-only via kernels=["lora_mlp"] or
+    # plain-only via kernels=["geglu"].
+    "GemmaMLP":  [("lora_mlp", {}), ("geglu", {"activation": "gelu"})],
+    "Gemma2MLP": [("lora_mlp", {}), ("geglu", {"activation": "gelu"})],
+
+    # Attention — only the LoRA-fused path is meaningful here; without a PEFT
+    # wrapper there is nothing to fuse, so the factory raises ForgeSkipPatch
+    # and the original Gemma2Attention.forward stays in place.
+    "Gemma2Attention": ("lora_qkv", {}),
 
     # Embedding — same as Qwen; nn.Embedding at model.embed_tokens
     "Embedding":        ("embedding", {}),

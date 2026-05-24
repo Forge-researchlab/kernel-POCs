@@ -126,11 +126,16 @@ def _print_patching_analysis():
     print("Per-class patches (module.forward is rebound; original kept in")
     print("model._forge_originals for bit-exact unpatch):")
     print()
-    for cls_name, (kernel, cfg) in GEMMA_MAPPING.items():
-        maker = _FORWARD_MAKERS.get(kernel)
-        stub = getattr(maker, "__forge_stub__", False) if maker else True
-        status = "STUB (skipped)" if stub else "real kernel"
-        print(f"  {cls_name:18s} -> kernel={kernel!r:14s} cfg={cfg!r:34s} [{status}]")
+    for cls_name, specs in GEMMA_MAPPING.items():
+        # specs may be a single (kernel, cfg) tuple OR a list of such tuples
+        # tried in order (the core patch loop picks the first one whose factory
+        # doesn't raise ForgeSkipPatch). Normalize to a list for display.
+        spec_list = [specs] if isinstance(specs, tuple) else specs
+        for kernel, cfg in spec_list:
+            maker = _FORWARD_MAKERS.get(kernel)
+            stub = getattr(maker, "__forge_stub__", False) if maker else True
+            status = "STUB (skipped)" if stub else "real kernel"
+            print(f"  {cls_name:18s} -> kernel={kernel!r:14s} cfg={cfg!r:34s} [{status}]")
     print()
     print("Module-level patches (replaces transformers.models.*.apply_rotary_pos_emb):")
     for kernel, spec in GEMMA_MODULE_LEVEL_PATCHES.items():

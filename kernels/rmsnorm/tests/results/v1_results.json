@@ -19,7 +19,7 @@
       0
     ]
   },
-  "timestamp_utc": "2026-05-24T11:47:58.942921+00:00",
+  "timestamp_utc": "2026-05-24T14:50:48.443442+00:00",
   "results": {
     "forward_correctness": {
       "summary": {
@@ -226,7 +226,7 @@
           },
           "dtype": "torch.bfloat16",
           "dx_diff": 0.015625,
-          "dw_diff": 0.015625,
+          "dw_diff": 0.03125,
           "tolerance": {
             "atol": 0.05,
             "rtol": 0.05
@@ -273,8 +273,8 @@
             "hidden": 4096
           },
           "dtype": "torch.float32",
-          "dx_diff": 1.430511474609375e-06,
-          "dw_diff": 2.6702880859375e-05,
+          "dx_diff": 9.5367431640625e-07,
+          "dw_diff": 3.0517578125e-05,
           "tolerance": {
             "atol": 0.0001,
             "rtol": 1e-05
@@ -300,10 +300,10 @@
           },
           "dtype": "torch.bfloat16",
           "median_ms": {
-            "pytorch_ref": 0.04259537532925606,
-            "forge_v1": 0.00824064388871193
+            "pytorch_ref": 0.04149498790502548,
+            "forge_v1": 0.008365150541067123
           },
-          "speedup_vs_pytorch": 5.168937755895919
+          "speedup_vs_pytorch": 4.9604591933299576
         },
         {
           "shape_label": "tiny",
@@ -314,10 +314,10 @@
           },
           "dtype": "torch.float16",
           "median_ms": {
-            "pytorch_ref": 0.03382977098226547,
-            "forge_v1": 0.007113205268979073
+            "pytorch_ref": 0.035606127232313156,
+            "forge_v1": 0.007159296423196793
           },
-          "speedup_vs_pytorch": 4.755910971640063
+          "speedup_vs_pytorch": 4.97341150967656
         },
         {
           "shape_label": "qwen25_0p5b",
@@ -328,10 +328,10 @@
           },
           "dtype": "torch.bfloat16",
           "median_ms": {
-            "pytorch_ref": 0.053836751729249954,
-            "forge_v1": 0.010172951966524124
+            "pytorch_ref": 0.05438040569424629,
+            "forge_v1": 0.010879822075366974
           },
-          "speedup_vs_pytorch": 5.292146459199768
+          "speedup_vs_pytorch": 4.998280791500173
         },
         {
           "shape_label": "qwen25_0p5b",
@@ -342,10 +342,10 @@
           },
           "dtype": "torch.float16",
           "median_ms": {
-            "pytorch_ref": 0.05330566689372063,
-            "forge_v1": 0.01027748268097639
+            "pytorch_ref": 0.053495362401008606,
+            "forge_v1": 0.010272898711264133
           },
-          "speedup_vs_pytorch": 5.186646239004553
+          "speedup_vs_pytorch": 5.207426248868925
         },
         {
           "shape_label": "qwen3_8b_short",
@@ -356,10 +356,10 @@
           },
           "dtype": "torch.bfloat16",
           "median_ms": {
-            "pytorch_ref": 0.26263225078582764,
-            "forge_v1": 0.029602572321891785
+            "pytorch_ref": 0.26485002040863037,
+            "forge_v1": 0.030195346102118492
           },
-          "speedup_vs_pytorch": 8.871940179050084
+          "speedup_vs_pytorch": 8.771219893056585
         },
         {
           "shape_label": "qwen3_8b_short",
@@ -370,10 +370,10 @@
           },
           "dtype": "torch.float16",
           "median_ms": {
-            "pytorch_ref": 0.26186543703079224,
-            "forge_v1": 0.0300894845277071
+            "pytorch_ref": 0.26043906807899475,
+            "forge_v1": 0.029322562739253044
           },
-          "speedup_vs_pytorch": 8.70288877131346
+          "speedup_vs_pytorch": 8.881865831268373
         },
         {
           "shape_label": "qwen3_8b_train",
@@ -384,10 +384,10 @@
           },
           "dtype": "torch.bfloat16",
           "median_ms": {
-            "pytorch_ref": 0.4829985201358795,
-            "forge_v1": 0.04939698800444603
+            "pytorch_ref": 0.48394259810447693,
+            "forge_v1": 0.049350351095199585
           },
-          "speedup_vs_pytorch": 9.777894152016044
+          "speedup_vs_pytorch": 9.806264542493823
         },
         {
           "shape_label": "qwen3_8b_train",
@@ -398,10 +398,10 @@
           },
           "dtype": "torch.float16",
           "median_ms": {
-            "pytorch_ref": 0.47965073585510254,
-            "forge_v1": 0.04939258471131325
+            "pytorch_ref": 0.4840530753135681,
+            "forge_v1": 0.049446698278188705
           },
-          "speedup_vs_pytorch": 9.710986753548854
+          "speedup_vs_pytorch": 9.789391246919461
         }
       ]
     }

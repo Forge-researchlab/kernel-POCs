@@ -1,6 +1,6 @@
 # ForgeRMSNorm V1 — Test Results Summary
 
-**Run:** 2026-05-24T11:47:58.942921+00:00
+**Run:** 2026-05-24T14:50:48.443442+00:00
 **Device:** NVIDIA A100-SXM4-80GB
 **Torch / Triton:** 2.4.1+cu124 / 3.0.0
 
@@ -18,11 +18,11 @@
 
 | Shape | dtype | PT (ms) | **V1 (ms)** | speedup vs PT |
 |---|---|---|---|---|
-| tiny (1×8×64) | torch.bfloat16 | 0.043 | **0.008** | 5.17× |
-| tiny (1×8×64) | torch.float16 | 0.034 | **0.007** | 4.76× |
-| qwen25_0p5b (2×512×896) | torch.bfloat16 | 0.054 | **0.010** | 5.29× |
-| qwen25_0p5b (2×512×896) | torch.float16 | 0.053 | **0.010** | 5.19× |
-| qwen3_8b_short (4×512×4096) | torch.bfloat16 | 0.263 | **0.030** | 8.87× |
-| qwen3_8b_short (4×512×4096) | torch.float16 | 0.262 | **0.030** | 8.70× |
-| qwen3_8b_train (2×2048×4096) | torch.bfloat16 | 0.483 | **0.049** | 9.78× |
-| qwen3_8b_train (2×2048×4096) | torch.float16 | 0.480 | **0.049** | 9.71× |
+| tiny (1×8×64) | torch.bfloat16 | 0.041 | **0.008** | 4.96× |
+| tiny (1×8×64) | torch.float16 | 0.036 | **0.007** | 4.97× |
+| qwen25_0p5b (2×512×896) | torch.bfloat16 | 0.054 | **0.011** | 5.00× |
+| qwen25_0p5b (2×512×896) | torch.float16 | 0.053 | **0.010** | 5.21× |
+| qwen3_8b_short (4×512×4096) | torch.bfloat16 | 0.265 | **0.030** | 8.77× |
+| qwen3_8b_short (4×512×4096) | torch.float16 | 0.260 | **0.029** | 8.88× |
+| qwen3_8b_train (2×2048×4096) | torch.bfloat16 | 0.484 | **0.049** | 9.81× |
+| qwen3_8b_train (2×2048×4096) | torch.float16 | 0.484 | **0.049** | 9.79× |

@@ -76,37 +76,126 @@ def _lora_tensors(linear, *, allow_bias: bool = False):
     )
 
 
-def make_lora_mlp_forward(module, config):
-    """Qwen PEFT LoRA MLP.forward -> Forge LoRA-MLP v3."""
-    from forge.kernels.lora_mlp import LoRAMLPv3
+_QWEN_MLP_ACTIVATIONS = {"silu", None}  # None → silu by default in HF Qwen MLP
+_GEMMA_TANH_ACTIVATIONS = {"gelu_pytorch_tanh", "gelu_new"}
+_GEMMA_EXACT_ACTIVATIONS = {"gelu", "gelu_python"}
 
-    W_gate, A_gate, B_gate, s_gate, _ = _lora_tensors(module.gate_proj)
-    W_up, A_up, B_up, s_up, _ = _lora_tensors(module.up_proj)
-    W_down, A_down, B_down, s_down, _ = _lora_tensors(module.down_proj)
+
+def _detect_mlp_activation(module):
+    """Sniff the activation kind from the HF config attached to the MLP.
+
+    Qwen MLPs use SiLU (the kernel default for LoRAMLPv3); Gemma 2 MLPs use
+    `gelu_pytorch_tanh` or `gelu`. Returns one of: "silu", "gelu_tanh",
+    "gelu_exact". Raises ForgeSkipPatch when the activation is unrecognized —
+    silently routing a GeGLU MLP through a SiLU kernel would shift outputs
+    ~1e-3 (caught by the Gemma forward-parity test).
+    """
+    hf_cfg = getattr(module, "config", None)
+    act = None
+    if hf_cfg is not None:
+        act = getattr(hf_cfg, "hidden_activation", None) or getattr(hf_cfg, "hidden_act", None)
+    if act in _QWEN_MLP_ACTIVATIONS:
+        return "silu"
+    if act in _GEMMA_TANH_ACTIVATIONS:
+        return "gelu_tanh"
+    if act in _GEMMA_EXACT_ACTIVATIONS:
+        return "gelu_exact"
+    raise ForgeSkipPatch(
+        f"LoRA MLP fused kernel cannot infer activation from {act!r}; "
+        f"fall back to per-projection patching"
+    )
+
+
+def make_lora_mlp_forward(module, config):
+    """PEFT LoRA MLP.forward -> Forge LoRA-MLP fused kernel.
+
+    Two activation paths:
+
+      * SiLU (Qwen 2/3 default) -> LoRAMLPv3 — single autograd.Function that
+        fuses gate/up/down projections + LoRA + SwiGLU.
+      * GeGLU (Gemma 2 default) -> manual gate/up/down through the same
+        projections, with the GeGLU activation routed through the existing
+        forge.kernels.geglu kernel. We can't reuse LoRAMLPv3 here because it
+        hardcodes SiLU (see kernels/lora_mlp/.../lora_mlp_kernel_v3.py:133
+        `silu_e = e_tile * tl.sigmoid(e_tile)`).
+
+    The Gemma path is a thin layered approach (LoRA projections via PyTorch + the
+    existing GeGLU kernel for the activation) rather than a deeper fusion — this
+    matches the Day-2 scope and ships a correct LoRA path for Gemma 2 without
+    requiring a new LoRA-MLP-GeGLU kernel. A future fully-fused Gemma path can
+    plug in here once the kernel exists.
+    """
+    activation = _detect_mlp_activation(module)
+
+    if activation == "silu":
+        from forge.kernels.lora_mlp import LoRAMLPv3
+
+        W_gate, A_gate, B_gate, s_gate, _ = _lora_tensors(module.gate_proj)
+        W_up, A_up, B_up, s_up, _ = _lora_tensors(module.up_proj)
+        W_down, A_down, B_down, s_down, _ = _lora_tensors(module.down_proj)
+
+        def forward(x):
+            dtype = x.dtype
+            return LoRAMLPv3.apply(
+                x,
+                W_gate,
+                A_gate.to(dtype),
+                B_gate.to(dtype),
+                s_gate,
+                W_up,
+                A_up.to(dtype),
+                B_up.to(dtype),
+                s_up,
+                W_down,
+                A_down.to(dtype),
+                B_down.to(dtype),
+                s_down,
+            )
+        return forward
+
+    # GeGLU path (Gemma 2) — no fused LoRA-MLP-GeGLU kernel yet, so we lean on
+    # the projection submodules (which PEFT has already wrapped to include
+    # their LoRA-A/B contribution) and just fuse the GeGLU activation.
+    from forge.kernels.geglu import geglu
+
+    # Pre-validate the projections are PEFT-wrapped with extractable adapters —
+    # we don't use the extracted tensors here (the projection submodules know
+    # how to compute their LoRA-augmented outputs themselves), but raising
+    # ForgeSkipPatch on a non-LoRA module falls through cleanly to the geglu
+    # mapping that would otherwise apply to this class.
+    _lora_tensors(module.gate_proj)
+    _lora_tensors(module.up_proj)
+    _lora_tensors(module.down_proj)
+
+    approximate = "tanh" if activation == "gelu_tanh" else "none"
 
     def forward(x):
-        dtype = x.dtype
-        return LoRAMLPv3.apply(
-            x,
-            W_gate,
-            A_gate.to(dtype),
-            B_gate.to(dtype),
-            s_gate,
-            W_up,
-            A_up.to(dtype),
-            B_up.to(dtype),
-            s_up,
-            W_down,
-            A_down.to(dtype),
-            B_down.to(dtype),
-            s_down,
-        )
+        gate = module.gate_proj(x)
+        up = module.up_proj(x)
+        return module.down_proj(geglu(gate, up, approximate=approximate))
 
     return forward
 
 
 def make_lora_qkv_forward(module, config):
-    """Qwen PEFT LoRA attention Q/K/V projections -> Forge LoRA-QKV v3."""
+    """PEFT LoRA attention Q/K/V projections -> Forge LoRA-QKV v3.
+
+    Works for both Qwen (2/3) and Gemma 2 attention blocks. Architecture
+    differences handled at call time, not closure-build time:
+      * Gemma 2 sets `self.sliding_window` per-layer (None on full-attn layers).
+        The existing `getattr(module, "sliding_window", None)` path picks this
+        up; the subsequent Qwen-specific config lookup is a no-op for Gemma 2
+        because `use_sliding_window` is absent.
+      * Gemma 2 has `attn_logit_softcapping` (numeric or None) that must be
+        forwarded to the attention interface as `softcap=`. Qwen 3 has no
+        such attribute, so we only pass softcap when present.
+      * Gemma 2's HF forward takes `past_key_values` (plural); older Qwen
+        signatures used `past_key_value` (singular). We accept both names —
+        in PEFT-wrapped models the kwargs flow through whichever name the
+        outer block passes.
+      * Gemma 2 has no q_norm/k_norm (Qwen 3 specific). The hasattr-guards
+        already in place make this safe.
+    """
     from forge.kernels.lora_qkv import lora_qkv_v3
 
     W_q, A_q, B_q, s_q, bias_q = _lora_tensors(module.q_proj, allow_bias=True)
@@ -119,9 +208,15 @@ def make_lora_qkv_forward(module, config):
         position_embeddings,
         attention_mask,
         past_key_value=None,
+        past_key_values=None,
         cache_position=None,
         **kwargs,
     ):
+        # Accept either naming (Gemma 2 uses past_key_values plural; older Qwen
+        # signatures use past_key_value singular). Whichever the outer block
+        # passes is the one we use.
+        kv_cache = past_key_values if past_key_values is not None else past_key_value
+
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, module.head_dim)
         dtype = hidden_states.dtype
@@ -165,9 +260,9 @@ def make_lora_qkv_forward(module, config):
         cos, sin = position_embeddings
         query_states, key_states = modeling.apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        if past_key_value is not None:
+        if kv_cache is not None:
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(key_states, value_states, module.layer_idx, cache_kwargs)
+            key_states, value_states = kv_cache.update(key_states, value_states, module.layer_idx, cache_kwargs)
 
         sliding_window = getattr(module, "sliding_window", None)
         if sliding_window is None and hasattr(module, "config"):
@@ -188,6 +283,13 @@ def make_lora_qkv_forward(module, config):
             else:
                 attention_interface = modeling.ALL_ATTENTION_FUNCTIONS[module.config._attn_implementation]
 
+        # Gemma 2 expects softcap=; Qwen doesn't pass it. Only forward when
+        # the attention block actually carries it (and it's non-None).
+        extra_kwargs = {}
+        softcap = getattr(module, "attn_logit_softcapping", None)
+        if softcap is not None:
+            extra_kwargs["softcap"] = softcap
+
         attn_output, attn_weights = attention_interface(
             module,
             query_states,
@@ -197,6 +299,7 @@ def make_lora_qkv_forward(module, config):
             dropout=0.0 if not module.training else module.attention_dropout,
             scaling=module.scaling,
             sliding_window=sliding_window,
+            **extra_kwargs,
             **kwargs,
         )
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
